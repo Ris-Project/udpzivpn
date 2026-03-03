@@ -1030,24 +1030,23 @@ func sendAccountInfo(bot *tgbotapi.BotAPI, chatID int64, data map[string]interfa
     }
 
     msg := fmt.Sprintf(
-        "╭──「 ✅ ACCOUNT DETAILS 」\n"+
-            "│\n"+
-            "│ 🔑 Password : `%s`\n"+
-            "│ 🌐 Domain   : `%s`\n"+
-            "│ 📅 Expired  : %s\n"+
-            "│\n"+
-            "│ ─── Info Server ───\n"+
-            "│ 🏙️ City     : %s\n"+
-            "│ 📡 ISP      : %s\n"+
-            "│\n"+
-            "╰── ⚡ Selamat Menggunakan!",
-        data["password"],
-        domain,
-        data["expired"],
-        ipInfo.City,
-        ipInfo.Isp,
-        ipInfo.Query,
-    )
+    "╭──「 ✅ ACCOUNT DETAILS 」\n"+
+        "│\n"+
+        "│ 🔑 Password : `%s`\n"+
+        "│ 🌐 Domain   : `%s`\n"+
+        "│ 📅 Expired  : %s\n"+
+        "│\n"+
+        "│ ─── Info Server ───\n"+
+        "│ 🏙️ City     : %s\n"+
+        "│ 📡 ISP      : %s\n"+
+        "│\n"+
+        "╰── ⚡ Selamat Menggunakan!",
+    data["password"],
+    domain,
+    data["expired"],
+    ipInfo.City,
+    ipInfo.Isp,
+)
 
     reply := tgbotapi.NewMessage(chatID, msg)
     reply.ParseMode = "Markdown"
