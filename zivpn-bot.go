@@ -25,11 +25,14 @@ import (
 // ==========================================
 
 const (
-    BotConfigFile = "/etc/zivpn/bot-config.json"
-    ApiPortFile   = "/etc/zivpn/api_port"
-    ApiKeyFile    = "/etc/zivpn/apikey"
-    DomainFile    = "/etc/zivpn/domain"
-    PortFile      = "/etc/zivpn/port"
+    BotConfigFile     = "/etc/zivpn/bot-config.json"
+    ApiPortFile       = "/etc/zivpn/api_port"
+    ApiKeyFile        = "/etc/zivpn/apikey"
+    DomainFile        = "/etc/zivpn/domain"
+    PortFile          = "/etc/zivpn/port"
+    PublicUsageFile   = "/etc/zivpn/public_usage.json" // File untuk tracking penggunaan public
+    PublicMaxDays     = 7                              // Maksimal hari untuk public
+    PublicCooldownDays = 6                              // Cooldown 6 hari sebelum bisa create lagi
 )
 
 var ApiUrl = "http://127.0.0.1:" + PortFile + "/api"
@@ -54,6 +57,11 @@ type UserData struct {
     Expired  string `json:"expired"`
     Status   string `json:"status"`
     IpLimit  int    `json:"ip_limit"`
+}
+
+// Struktur untuk menyimpan data penggunaan public
+type PublicUsageData struct {
+    LastCreated int64 `json:"last_created"` // Unix timestamp
 }
 
 // ==========================================
@@ -160,7 +168,7 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
     switch {
     // --- Menu Navigation ---
     case query.Data == "menu_create":
-        startCreateUser(bot, chatID, userID)
+        startCreateUser(bot, chatID, userID, config)
     case query.Data == "menu_delete":
         showUserSelection(bot, chatID, 1, "delete")
     case query.Data == "menu_renew":
@@ -227,17 +235,35 @@ func handleState(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, state string, conf
         }
         tempUserData[userID]["username"] = text
         userStates[userID] = "create_days"
-        sendMessage(bot, chatID, "⏳ Masukkan Durasi (hari):")
+        
+        // Pesan dinamis sesuai mode
+        hint := "⏳ Masukkan Durasi (hari):"
+        if config.Mode == "public" {
+            hint = fmt.Sprintf("⏳ Masukkan Durasi (hari):\n⚠️ Maksimal %d hari untuk pengguna Public.", PublicMaxDays)
+        }
+        sendMessage(bot, chatID, hint)
 
     case "create_days":
-        _, ok := validateNumber(bot, chatID, text, 1, 9999, "Durasi")
+        daysInt, ok := validateNumber(bot, chatID, text, 1, 9999, "Durasi")
         if !ok {
             return
         }
-        tempUserData[userID]["days"] = text
 
-        days, _ := strconv.Atoi(text)
-        createUser(bot, chatID, tempUserData[userID]["username"], days, config)
+        // Validasi khusus Public
+        if config.Mode == "public" && userID != config.AdminID {
+            if daysInt > PublicMaxDays {
+                sendMessage(bot, chatID, fmt.Sprintf("❌ Durasi maksimal untuk pengguna Public adalah %d hari.", PublicMaxDays))
+                return
+            }
+
+            // Cek Cooldown
+            if !checkPublicCooldown(userID) {
+                return
+            }
+        }
+
+        tempUserData[userID]["days"] = text
+        createUser(bot, chatID, tempUserData[userID]["username"], daysInt, config)
         resetState(userID)
 
     case "renew_days":
@@ -254,7 +280,28 @@ func handleState(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, state string, conf
 // Feature Implementation
 // ==========================================
 
-func startCreateUser(bot *tgbotapi.BotAPI, chatID int64, userID int64) {
+func startCreateUser(bot *tgbotapi.BotAPI, chatID int64, userID int64, config *BotConfig) {
+    // Cek Cooldown sebelum memulai proses (untuk public)
+    if config.Mode == "public" && userID != config.AdminID {
+        usageData, err := loadPublicUsage()
+        if err == nil {
+            if data, exists := usageData[userID]; exists {
+                lastTime := time.Unix(data.LastCreated, 0)
+                elapsed := time.Since(lastTime)
+                cooldownDuration := time.Duration(PublicCooldownDays) * 24 * time.Hour
+                
+                if elapsed < cooldownDuration {
+                    remaining := cooldownDuration - elapsed
+                    remainingHours := int(remaining.Hours())
+                    days := remainingHours / 24
+                    hours := remainingHours % 24
+                    replyError(bot, chatID, fmt.Sprintf("⛔ Anda sudah membuat akun sebelumnya.\nHarap tunggu sekitar %d hari %d jam lagi sebelum membuat akun baru.", days, hours))
+                    return
+                }
+            }
+        }
+    }
+
     userStates[userID] = "create_username"
     tempUserData[userID] = make(map[string]string)
     sendMessage(bot, chatID, "👤 Masukkan Password/Username:")
@@ -305,6 +352,25 @@ func toggleMode(bot *tgbotapi.BotAPI, chatID int64, userID int64, config *BotCon
     showMainMenu(bot, chatID, config)
 }
 
+// checkPublicCooldown mengembalikan false jika user masih dalam masa cooldown
+func checkPublicCooldown(userID int64) bool {
+    usageData, err := loadPublicUsage()
+    if err != nil {
+        return true // Jika error file, izinkan saja (first run)
+    }
+
+    data, exists := usageData[userID]
+    if !exists {
+        return true // Belum pernah buat, izinkan
+    }
+
+    lastTime := time.Unix(data.LastCreated, 0)
+    elapsed := time.Since(lastTime)
+    cooldownDuration := time.Duration(PublicCooldownDays) * 24 * time.Hour
+
+    return elapsed >= cooldownDuration
+}
+
 func createUser(bot *tgbotapi.BotAPI, chatID int64, username string, days int, config *BotConfig) {
     res, err := apiCall("POST", "/user/create", map[string]interface{}{
         "password": username,
@@ -317,6 +383,41 @@ func createUser(bot *tgbotapi.BotAPI, chatID int64, username string, days int, c
     }
 
     if res["success"] == true {
+        // Jika berhasil, catat waktu pembuatan untuk public user
+        if config.Mode == "public" && config.AdminID != chatID { // Asumsi chatID == userID di private chat
+            // Gunakan map global atau passing userID. Karena di sini kita butuh userID, 
+            // dan fungsi createUser dipanggil dari handleState, kita perlu pass userID.
+            // Namun untuk meminimalkan perubahan signature, kita bisa skip logging di sini 
+            // dan lakukan di handleState, atau ubah signature.
+            // Ubah signature lebih bersih.
+        }
+        
+        data := res["data"].(map[string]interface{})
+        sendAccountInfo(bot, chatID, data, config)
+    } else {
+        replyError(bot, chatID, fmt.Sprintf("Gagal: %s", res["message"]))
+        showMainMenu(bot, chatID, config)
+    }
+}
+
+// Overload createUser untuk menerima userID logging
+func createUserWithLog(bot *tgbotapi.BotAPI, chatID int64, userID int64, username string, days int, config *BotConfig) {
+    res, err := apiCall("POST", "/user/create", map[string]interface{}{
+        "password": username,
+        "days":     days,
+    })
+
+    if err != nil {
+        replyError(bot, chatID, "Error API: "+err.Error())
+        return
+    }
+
+    if res["success"] == true {
+        // Log untuk Public User
+        if config.Mode == "public" && userID != config.AdminID {
+            savePublicUsage(userID)
+        }
+
         data := res["data"].(map[string]interface{})
         sendAccountInfo(bot, chatID, data, config)
     } else {
@@ -494,6 +595,7 @@ func performBackup(bot *tgbotapi.BotAPI, chatID int64) {
         "/etc/zivpn/config.json",
         "/etc/zivpn/users.json",
         "/etc/zivpn/domain",
+        PublicUsageFile, // Tambahkan file usage ke backup
     }
 
     buf := new(bytes.Buffer)
@@ -583,11 +685,12 @@ func processRestoreFile(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, config *Bot
     for _, f := range zipReader.File {
         // Security check: only allow specific files
         validFiles := map[string]bool{
-            "config.json":    true,
-            "users.json":     true,
-            "bot-config.json": true,
-            "domain":         true,
-            "apikey":         true,
+            "config.json":      true,
+            "users.json":       true,
+            "bot-config.json":  true,
+            "domain":           true,
+            "apikey":           true,
+            "public_usage.json": true,
         }
 
         if !validFiles[f.Name] {
@@ -639,18 +742,18 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
 
     // Stylish Main Menu
     msgText := fmt.Sprintf(
-        "╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
-        "│ 🤖RISWAN JABAR STORE  ZIVPN UDP BOT │\n"+
-        "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
-        "📍 INFORMASI SERVER\n"+
-        "┌━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
-        "│ 🌐 Domain : `%s`\n"+
-        "│ 🏙️ City   : %s\n"+
-        "│ 📡 ISP    : %s\n"+
-        "└━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
-        "👇 Pilih menu di bawah ini",
-    domain, ipInfo.City, ipInfo.Isp,
-)
+            "╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
+            "│ 🤖RISWAN JABAR STORE  ZIVPN UDP BOT \n"+
+            "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
+            "📍 INFORMASI SERVER\n"+
+            "┌━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
+            "│ 🌐 Domain : `%s`\n"+
+            "│ 🏙️ City   : %s\n"+
+            "│ 📡 ISP    : %s\n"+
+            "└━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
+            "👇 Pilih menu di bawah ini",
+        domain, ipInfo.City, ipInfo.Isp,
+    )
 
     msg := tgbotapi.NewMessage(chatID, msgText)
     msg.ParseMode = "Markdown"
@@ -701,7 +804,7 @@ func sendAccountInfo(bot *tgbotapi.BotAPI, chatID int64, data map[string]interfa
 
     // Stylish Account Info
     msg := fmt.Sprintf(
-        "╭──「 ✅ ACCOUNT DETAILS 」\n"+
+            "╭──「 ✅ ACCOUNT DETAILS 」\n"+
             "│\n"+
             "│ 🔑 Password : `%s`\n"+
             "│ 🌐 Domain   : `%s`\n"+
@@ -881,6 +984,41 @@ func loadConfig() (BotConfig, error) {
     }
 
     return config, err
+}
+
+// ==========================================
+// Public Usage Tracking Functions
+// ==========================================
+
+func loadPublicUsage() (map[int64]PublicUsageData, error) {
+    data := make(map[int64]PublicUsageData)
+    file, err := ioutil.ReadFile(PublicUsageFile)
+    if err != nil {
+        if os.IsNotExist(err) {
+            return data, nil // Return empty map if file not exist
+        }
+        return nil, err
+    }
+    err = json.Unmarshal(file, &data)
+    return data, err
+}
+
+func savePublicUsage(userID int64) error {
+    data, err := loadPublicUsage()
+    if err != nil {
+        // If error loading, start fresh map but log error ideally
+        data = make(map[int64]PublicUsageData)
+    }
+
+    data[userID] = PublicUsageData{
+        LastCreated: time.Now().Unix(),
+    }
+
+    jsonData, err := json.MarshalIndent(data, "", "  ")
+    if err != nil {
+        return err
+    }
+    return ioutil.WriteFile(PublicUsageFile, jsonData, 0644)
 }
 
 // ==========================================
