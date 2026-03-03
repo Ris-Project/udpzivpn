@@ -639,15 +639,18 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
 
     // Stylish Main Menu
     msgText := fmt.Sprintf(
-        "╭──「 🤖 ZIVPN UDP BOT 」\n"+
-            "│\n"+
-            "│ 🌐 Domain : `%s`\n"+
-            "│ 🏙️ City   : %s\n"+
-            "│ 📡 ISP    : %s\n"+
-            "│\n"+
-            "╰── 👇 Pilih menu di bawah ini:",
-        domain, ipInfo.City, ipInfo.Isp,
-    )
+        "╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
+        "│ 🤖RISWAN JABAR STORE  ZIVPN UDP BOT │\n"+
+        "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
+        "📍 INFORMASI SERVER\n"+
+        "┌━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
+        "│ 🌐 Domain : `%s`\n"+
+        "│ 🏙️ City   : %s\n"+
+        "│ 📡 ISP    : %s\n"+
+        "└━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
+        "👇 Pilih menu di bawah ini",
+    domain, ipInfo.City, ipInfo.Isp,
+)
 
     msg := tgbotapi.NewMessage(chatID, msgText)
     msg.ParseMode = "Markdown"
@@ -659,8 +662,8 @@ func getMainMenuKeyboard(config *BotConfig, userID int64) tgbotapi.InlineKeyboar
     // Public Menu (Everyone)
     rows := [][]tgbotapi.InlineKeyboardButton{
         tgbotapi.NewInlineKeyboardRow(
-            tgbotapi.NewInlineKeyboardButtonData("👤 Create ", "menu_create"),
-            tgbotapi.NewInlineKeyboardButtonData("🗑️ Delete", "menu_delete"),
+            tgbotapi.NewInlineKeyboardButtonData("👤 Create pasword", "menu_create"),
+            tgbotapi.NewInlineKeyboardButtonData("🗑️ Delete pasword", "menu_delete"),
         ),
         tgbotapi.NewInlineKeyboardRow(
             tgbotapi.NewInlineKeyboardButtonData("🔄 Renew", "menu_renew"),
