@@ -844,7 +844,7 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
             "┌━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
             "│ 🌐 Domain /ip : `%s`\n"+
             "│ 🏙️ City   : `%s`\n"+
-            "│ 📡 ISP    : `%s\n"+
+            "│ 📡 ISP    : `%s`\n"+
             "│ 👥 Total Akun: `%d`\n"+
             "│ ⏳ VPS Exp: `%s`\n"+
             "└━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
