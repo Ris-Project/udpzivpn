@@ -34,21 +34,21 @@ const (
     PublicUsageFile    = "/etc/zivpn/public_usage.json"
     PublicMaxDays      = 7
     PublicCooldownDays = 6
-    VpsExpiredFile     = "/etc/zivpn/vps_expired" // File untuk tanggal expired VPS
+    VpsExpiredFile     = "/etc/zivpn/vps_expired"
+    DonationDataFile   = "/etc/zivpn/donation_data.json"
 )
 
 // =====================================================
 // PENGATURAN GAMBAR (LOGO & DONASI)
 // =====================================================
-// Ganti link ini dengan link logo/banner bot Anda
 var BannerImageURL = "https://d.uguu.se/FwuepgvZ.jpg"
-
-// Link untuk QR Code Donasi
 var DonationImageURL = "https://h.uguu.se/sPcpNuqw.jpg"
 
 var ApiUrl = "http://127.0.0.1:" + PortFile + "/api"
-
 var ApiKey = "AutoFtBot-agskjgdvsbdreiWG1234512SDKrqw"
+
+// Target Donasi (Rp 80.000)
+const DonationTarget = 80000
 
 type BotConfig struct {
     BotToken string `json:"bot_token"`
@@ -72,6 +72,11 @@ type UserData struct {
 
 type PublicUsageData struct {
     LastCreated int64 `json:"last_created"`
+}
+
+// Struct untuk menyimpan data donasi
+type DonationData struct {
+    Collected int `json:"collected"`
 }
 
 // ==========================================
@@ -109,6 +114,8 @@ func main() {
 
     bot.Debug = false
     log.Printf("Authorized on account %s", bot.Self.UserName)
+
+    go startAutoBackupScheduler(bot, config.AdminID)
 
     u := tgbotapi.NewUpdate(0)
     u.Timeout = 60
@@ -174,6 +181,10 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
     case query.Data == "menu_set_vps_exp":
         if userID == config.AdminID {
             startSetVpsExp(bot, chatID, userID)
+        }
+    case query.Data == "menu_set_donasi":
+        if userID == config.AdminID {
+            startSetDonation(bot, chatID, userID)
         }
     case query.Data == "menu_delete":
         if userID != config.AdminID {
@@ -341,16 +352,14 @@ func handleState(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, state string, conf
             replyError(bot, chatID, fmt.Sprintf("Gagal: %s", res["message"]))
             showMainMenu(bot, chatID, config)
         }
-    
+
     case "set_vps_exp":
-        // Validasi format tanggal YYYY-MM-DD
         _, err := time.Parse("2006-01-02", text)
         if err != nil {
             sendMessage(bot, chatID, "❌ Format tanggal salah. Gunakan format: YYYY-MM-DD\nContoh: 2024-12-31")
             return
         }
 
-        // Simpan ke file
         err = ioutil.WriteFile(VpsExpiredFile, []byte(text), 0644)
         if err != nil {
             replyError(bot, chatID, "Gagal menyimpan tanggal expired.")
@@ -359,6 +368,19 @@ func handleState(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, state string, conf
 
         resetState(userID)
         sendMessage(bot, chatID, fmt.Sprintf("✅ Tanggal Expired VPS berhasil diatur: %s", text))
+        showMainMenu(bot, chatID, config)
+
+    case "set_donation_amount":
+        amount, ok := validateNumber(bot, chatID, text, 0, 999999999, "Jumlah Donasi")
+        if !ok {
+            return
+        }
+
+        data := DonationData{Collected: amount}
+        saveDonationData(data)
+
+        resetState(userID)
+        sendMessage(bot, chatID, fmt.Sprintf("✅ Jumlah donasi berhasil diupdate menjadi Rp %s", formatRupiah(amount)))
         showMainMenu(bot, chatID, config)
     }
 }
@@ -415,7 +437,7 @@ func startCreateUser(bot *tgbotapi.BotAPI, chatID int64, userID int64, config *B
 
 func startSetVpsExp(bot *tgbotapi.BotAPI, chatID int64, userID int64) {
     userStates[userID] = "set_vps_exp"
-    
+
     currentExp := "Belum diset"
     if data, err := ioutil.ReadFile(VpsExpiredFile); err == nil {
         if len(data) > 0 {
@@ -424,6 +446,13 @@ func startSetVpsExp(bot *tgbotapi.BotAPI, chatID int64, userID int64) {
     }
 
     msg := fmt.Sprintf("⏳ 「 SET VPS EXPIRED 」\n\nFormat: YYYY-MM-DD\nCurrent: %s\n\nMasukkan tanggal kadaluarsa VPS baru:", currentExp)
+    sendMessage(bot, chatID, msg)
+}
+
+func startSetDonation(bot *tgbotapi.BotAPI, chatID int64, userID int64) {
+    userStates[userID] = "set_donation_amount"
+    currentData := loadDonationData()
+    msg := fmt.Sprintf("💰 「 SET DONASI TERKUMPUL 」\n\nTarget: Rp %s\nTerkumpul: Rp %s\n\nMasukkan jumlah donasi yang baru (Rp):", formatRupiah(DonationTarget), formatRupiah(currentData.Collected))
     sendMessage(bot, chatID, msg)
 }
 
@@ -473,23 +502,53 @@ func toggleMode(bot *tgbotapi.BotAPI, chatID int64, userID int64, config *BotCon
 }
 
 func sendDonationInfo(bot *tgbotapi.BotAPI, chatID int64) {
-    caption := `╭──「 ☕ DONASI & SUPPORT 」
-│
-│ Hai! Terima kasih telah menggunakan
-│ layanan bot ini. 🤖
-│
-│ Jika kamu merasa terbantu, dukung
-│ developer dengan seikhlasnya agar
-│ bot bisa terus berjalan. 🚀
-│
-│ 💳 Scan QR Code di atas
-│
-│ Donasi akan digunakan untuk:
-│ • Biaya Server/VPS 💸
-│ • Secangkir Kopi ☕
-│
-│ Terima kasih! ❤️
-╰──────────────────────`
+    donationData := loadDonationData()
+    collected := donationData.Collected
+    target := DonationTarget
+
+    percent := 0
+    if target > 0 {
+        percent = (collected * 100) / target
+        if percent > 100 {
+            percent = 100
+        }
+    }
+
+    progressBars := 10
+    filledBars := percent / 10
+    barStr := ""
+    for i := 0; i < progressBars; i++ {
+        if i < filledBars {
+            barStr += "▓"
+        } else {
+            barStr += "░"
+        }
+    }
+
+    caption := fmt.Sprintf(
+        "╭──「 ☕ DONASI & SUPPORT 」\n"+
+            "│\n"+
+            "│ Hai! Terima kasih telah menggunakan\n"+
+            "│ layanan bot ini. 🤖\n"+
+            "│\n"+
+            "│ 🎯 Target Donasi: Rp %s\n"+
+            "│ 💰 Terkumpul: Rp %s\n"+
+            "│ 📊 Progress: [%s] %d%%\n"+
+            "│\n"+
+            "│ Jika kamu merasa terbantu, dukung\n"+
+            "│ developer dengan seikhlasnya agar\n"+
+            "│ bot bisa terus berjalan. 🚀\n"+
+            "│\n"+
+            "│ 💳 Scan QR Code di atas\n"+
+            "│\n"+
+            "│ Donasi akan digunakan untuk:\n"+
+            "│ • Biaya Server/VPS 💸\n"+
+            "│ • Secangkir Kopi ☕\n"+
+            "│\n"+
+            "│ Terima kasih! ❤️\n"+
+            "╰──────────────────────",
+        formatRupiah(target), formatRupiah(collected), barStr, percent,
+    )
 
     msg := tgbotapi.NewPhoto(chatID, tgbotapi.FileURL(DonationImageURL))
     msg.Caption = caption
@@ -570,7 +629,7 @@ func systemInfo(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
     if res["success"] == true {
         data := res["data"].(map[string]interface{})
         ipInfo, _ := getIpInfo()
-        
+
         vpsExpInfo := getVpsExpiryInfo()
         totalAcc := getTotalAccounts()
 
@@ -660,6 +719,7 @@ func performBackup(bot *tgbotapi.BotAPI, chatID int64) {
         "/etc/zivpn/domain",
         PublicUsageFile,
         VpsExpiredFile,
+        DonationDataFile,
     }
 
     buf := new(bytes.Buffer)
@@ -703,6 +763,21 @@ func performBackup(bot *tgbotapi.BotAPI, chatID int64) {
     bot.Send(doc)
 }
 
+// ==========================================
+// FITUR BARU: Auto Backup Scheduler
+// ==========================================
+func startAutoBackupScheduler(bot *tgbotapi.BotAPI, adminID int64) {
+    ticker := time.NewTicker(4 * time.Hour)
+    defer ticker.Stop()
+
+    log.Printf("⏰ Auto Backup Scheduler dimulai (setiap 4 jam). Target Admin ID: %d", adminID)
+
+    for range ticker.C {
+        log.Println("🔄 Menjalankan auto backup terjadwal...")
+        performBackup(bot, adminID)
+    }
+}
+
 func startRestore(bot *tgbotapi.BotAPI, chatID int64, userID int64) {
     userStates[userID] = "waiting_restore_file"
     sendMessage(bot, chatID, "⬆️ 「 RESTORE DATA 」\n\nSilakan kirim file ZIP backup Anda sekarang.\n\n⚠️ PERINGATAN: Data saat ini akan ditimpa!")
@@ -744,13 +819,14 @@ func processRestoreFile(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, config *Bot
 
     for _, f := range zipReader.File {
         validFiles := map[string]bool{
-            "config.json":      true,
-            "users.json":       true,
-            "bot-config.json":  true,
-            "domain":           true,
-            "apikey":           true,
-            "public_usage.json": true,
-            "vps_expired":      true,
+            "config.json":        true,
+            "users.json":         true,
+            "bot-config.json":    true,
+            "domain":             true,
+            "apikey":             true,
+            "public_usage.json":  true,
+            "vps_expired":        true,
+            "donation_data.json": true,
         }
 
         if !validFiles[f.Name] {
@@ -806,14 +882,14 @@ func getVpsExpiryInfo() string {
     }
 
     text := strings.TrimSpace(string(data))
-    
+
     expTime, err := time.Parse("2006-01-02", text)
     if err != nil {
         return "Invalid Date"
     }
 
     now := time.Now()
-    
+
     if now.After(expTime) {
         return "❌ EXPIRED"
     }
@@ -826,6 +902,21 @@ func getVpsExpiryInfo() string {
     return fmt.Sprintf("%d Hari %d Jam %d Menit", days, hours, minutes)
 }
 
+// Fungsi Helper untuk Format Rupiah (Titik pemisah ribuan)
+func formatRupiah(n int) string {
+    s := strconv.Itoa(n)
+    result := ""
+    count := 0
+    for i := len(s) - 1; i >= 0; i-- {
+        count++
+        result = string(s[i]) + result
+        if count%3 == 0 && i != 0 {
+            result = "." + result
+        }
+    }
+    return result
+}
+
 func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
     ipInfo, _ := getIpInfo()
     domain := config.Domain
@@ -835,6 +926,10 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
 
     totalAcc := getTotalAccounts()
     vpsExp := getVpsExpiryInfo()
+    
+    // Load Donasi
+    donationData := loadDonationData()
+    donationAmount := formatRupiah(donationData.Collected)
 
     msgText := fmt.Sprintf(
         "╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
@@ -846,10 +941,11 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
             "│ 🏙️ City   : %s\n"+
             "│ 📡 ISP    : %s\n"+
             "│ 👥 Total Akun: %d\n"+
+            "│ 💰 Donasi : Rp %s\n"+ // Baris baru ditambahkan di sini
             "│ ⏳ VPS Exp: %s\n"+
             "└━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
             "👇 Pilih menu di bawah ini",
-        domain, ipInfo.City, ipInfo.Isp, totalAcc, vpsExp,
+        domain, ipInfo.City, ipInfo.Isp, totalAcc, donationAmount, vpsExp,
     )
 
     deleteLastMessage(bot, chatID)
@@ -901,7 +997,10 @@ func getMainMenuKeyboard(config *BotConfig, chatID int64) tgbotapi.InlineKeyboar
             ),
             tgbotapi.NewInlineKeyboardRow(
                 tgbotapi.NewInlineKeyboardButtonData("🧹 Cleanup Expired", "menu_cleanup"),
-                tgbotapi.NewInlineKeyboardButtonData("⏳ Set VPS Exp", "menu_set_vps_exp"), // Tombol Baru
+                tgbotapi.NewInlineKeyboardButtonData("⏳ Set VPS Exp", "menu_set_vps_exp"),
+            ),
+            tgbotapi.NewInlineKeyboardRow(
+                tgbotapi.NewInlineKeyboardButtonData("💰 Set Donasi", "menu_set_donasi"),
             ),
             tgbotapi.NewInlineKeyboardRow(
                 tgbotapi.NewInlineKeyboardButtonData(modeLabel, "toggle_mode"),
@@ -1110,6 +1209,28 @@ func loadConfig() (BotConfig, error) {
     }
 
     return config, err
+}
+
+// ==========================================
+// Donation Data Helper Functions
+// ==========================================
+
+func loadDonationData() DonationData {
+    var data DonationData
+    file, err := ioutil.ReadFile(DonationDataFile)
+    if err != nil {
+        return data
+    }
+    json.Unmarshal(file, &data)
+    return data
+}
+
+func saveDonationData(data DonationData) error {
+    jsonData, err := json.MarshalIndent(data, "", "  ")
+    if err != nil {
+        return err
+    }
+    return ioutil.WriteFile(DonationDataFile, jsonData, 0644)
 }
 
 // ==========================================
