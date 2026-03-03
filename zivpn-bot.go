@@ -1009,30 +1009,25 @@ func getMainMenuKeyboard(config *BotConfig, chatID int64) tgbotapi.InlineKeyboar
         return tgbotapi.NewInlineKeyboardMarkup(rows...)
     }
 
-    func MenuPublic() tgbotapi.InlineKeyboardMarkup {
-    rows := [][]tgbotapi.InlineKeyboardButton{
-        tgbotapi.NewInlineKeyboardRow(
-            tgbotapi.NewInlineKeyboardButtonData("👤 Create Password", "menu_create"),
-        ),
-    }
-
-    // Tutorial YouTube
-    rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-        tgbotapi.NewInlineKeyboardButtonURL("📺 Tutorial Video", "https://youtu.be/rxBWuHoPt1I?si=HzlfVnoXMfyq_8lr"),
-    ))
-
-    // Download MiniZIVPN
-    rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-        tgbotapi.NewInlineKeyboardButtonURL("📥 Apk minizivpn", "https://sfile.co/wI2ojlwjJLR"),
-    ))
-
-    // Donasi
-    rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-        tgbotapi.NewInlineKeyboardButtonData("☕ Donasi / Support", "menu_donasi"),
-    ))
-
-    return tgbotapi.NewInlineKeyboardMarkup(rows...)
+    // Menu Public
+rows := [][]tgbotapi.InlineKeyboardButton{
+    tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonData("👤 Create Password", "menu_create"),
+    ),
 }
+
+// Tambah Tutorial + Download (1 baris)
+rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+    tgbotapi.NewInlineKeyboardButtonURL("📺 Tutorial di youtube", "https://youtu.be/rxBWuHoPt1I?si=HzlfVnoXMfyq_8lr"),
+    tgbotapi.NewInlineKeyboardButtonURL("📥 Apk minizivpn", "https://sfile.co/wI2ojlwjJLR"),
+))
+
+// Donasi
+rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+    tgbotapi.NewInlineKeyboardButtonData("☕ Donasi / Support", "menu_donasi"),
+))
+
+return tgbotapi.NewInlineKeyboardMarkup(rows...)
 
 func sendAccountInfo(bot *tgbotapi.BotAPI, chatID int64, data map[string]interface{}, config *BotConfig) {
     ipInfo, _ := getIpInfo()
