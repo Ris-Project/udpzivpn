@@ -838,15 +838,15 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
 
     msgText := fmt.Sprintf(
         "╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
-            "│   🤖 RISWAN JABAR STORE ZIVPN UDP BOT \n"+
+            "│ 🤖 RISWAN JABAR STORE ZIVPN UDP BOT \n"+
             "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
             "📍 INFORMASI SERVER\n"+
             "┌━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
-            "│ 🌐 Domain /ip : `%s`\n"+
-            "│ 🏙️ City   : `%s`\n"+
-            "│ 📡 ISP    : `%s`\n"+
-            "│ 👥 Total Akun: `%d`\n"+
-            "│ ⏳ VPS Exp: `%s`\n"+
+            "│ 🌐 Domain : `%s`\n"+
+            "│ 🏙️ City   : %s\n"+
+            "│ 📡 ISP    : %s\n"+
+            "│ 👥 Total Akun: %d\n"+
+            "│ ⏳ VPS Exp: %s\n"+
             "└━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
             "👇 Pilih menu di bawah ini",
         domain, ipInfo.City, ipInfo.Isp, totalAcc, vpsExp,
@@ -934,13 +934,13 @@ func sendAccountInfo(bot *tgbotapi.BotAPI, chatID int64, data map[string]interfa
         "╭──「 ✅ ACCOUNT DETAILS 」\n"+
             "│\n"+
             "│ 🔑 Password : `%s`\n"+
-            "│ 🌐 Domain/ip : `%s`\n"+
-            "│ 📅 Expired  : `%s`\n"+
+            "│ 🌐 Domain   : `%s`\n"+
+            "│ 📅 Expired  : %s\n"+
             "│\n"+
             "│ ─── Info Server ───\n"+
-            "│ 🏙️ City : `%s`\n"+
-            "│ 📡 ISP : `%s`\n"+
-            "│ 🌍 IP : `%s`\n"+
+            "│ 🏙️ City     : %s\n"+
+            "│ 📡 ISP      : %s\n"+
+            "│ 🌍 IP       : %s\n"+
             "│\n"+
             "╰── ⚡ Selamat Menggunakan!",
         data["password"],
