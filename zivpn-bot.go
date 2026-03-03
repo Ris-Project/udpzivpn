@@ -42,7 +42,7 @@ const (
 // PENGATURAN GAMBAR (LOGO & DONASI)
 // =====================================================
 var BannerImageURL = "https://d.uguu.se/FwuepgvZ.jpg"
-var DonationImageURL = "https://h.uguu.se/sPcpNuqw.jpg"
+var DonationImageURL = "https://d.uguu.se/COLHUNWQ.png"
 
 var ApiUrl = "http://127.0.0.1:" + PortFile + "/api"
 var ApiKey = "AutoFtBot-agskjgdvsbdreiWG1234512SDKrqw"
