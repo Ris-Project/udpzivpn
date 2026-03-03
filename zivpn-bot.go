@@ -1009,12 +1009,24 @@ func getMainMenuKeyboard(config *BotConfig, chatID int64) tgbotapi.InlineKeyboar
         return tgbotapi.NewInlineKeyboardMarkup(rows...)
     }
 
-    // Menu Public
+    func MenuPublic() tgbotapi.InlineKeyboardMarkup {
     rows := [][]tgbotapi.InlineKeyboardButton{
         tgbotapi.NewInlineKeyboardRow(
             tgbotapi.NewInlineKeyboardButtonData("👤 Create Password", "menu_create"),
         ),
     }
+
+    // Tutorial YouTube
+    rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonURL("📺 Tutorial Video", "https://youtu.be/rxBWuHoPt1I?si=HzlfVnoXMfyq_8lr"),
+    ))
+
+    // Download MiniZIVPN
+    rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonURL("📥 Apk minizivpn", "https://sfile.co/wI2ojlwjJLR"),
+    ))
+
+    // Donasi
     rows = append(rows, tgbotapi.NewInlineKeyboardRow(
         tgbotapi.NewInlineKeyboardButtonData("☕ Donasi / Support", "menu_donasi"),
     ))
