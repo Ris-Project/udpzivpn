@@ -171,6 +171,10 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
         startCreateUser(bot, chatID, userID, config)
     case query.Data == "menu_donasi":
         sendDonationInfo(bot, chatID)
+    case query.Data == "menu_set_vps_exp":
+        if userID == config.AdminID {
+            startSetVpsExp(bot, chatID, userID)
+        }
     case query.Data == "menu_delete":
         if userID != config.AdminID {
             bot.Request(tgbotapi.NewCallback(query.ID, "Akses Ditolak"))
@@ -337,6 +341,25 @@ func handleState(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, state string, conf
             replyError(bot, chatID, fmt.Sprintf("Gagal: %s", res["message"]))
             showMainMenu(bot, chatID, config)
         }
+    
+    case "set_vps_exp":
+        // Validasi format tanggal YYYY-MM-DD
+        _, err := time.Parse("2006-01-02", text)
+        if err != nil {
+            sendMessage(bot, chatID, "❌ Format tanggal salah. Gunakan format: YYYY-MM-DD\nContoh: 2024-12-31")
+            return
+        }
+
+        // Simpan ke file
+        err = ioutil.WriteFile(VpsExpiredFile, []byte(text), 0644)
+        if err != nil {
+            replyError(bot, chatID, "Gagal menyimpan tanggal expired.")
+            return
+        }
+
+        resetState(userID)
+        sendMessage(bot, chatID, fmt.Sprintf("✅ Tanggal Expired VPS berhasil diatur: %s", text))
+        showMainMenu(bot, chatID, config)
     }
 }
 
@@ -388,6 +411,20 @@ func startCreateUser(bot *tgbotapi.BotAPI, chatID int64, userID int64, config *B
     userStates[userID] = "create_username"
     tempUserData[userID] = make(map[string]string)
     sendMessage(bot, chatID, "👤 Masukkan Password/Username:")
+}
+
+func startSetVpsExp(bot *tgbotapi.BotAPI, chatID int64, userID int64) {
+    userStates[userID] = "set_vps_exp"
+    
+    currentExp := "Belum diset"
+    if data, err := ioutil.ReadFile(VpsExpiredFile); err == nil {
+        if len(data) > 0 {
+            currentExp = strings.TrimSpace(string(data))
+        }
+    }
+
+    msg := fmt.Sprintf("⏳ 「 SET VPS EXPIRED 」\n\nFormat: YYYY-MM-DD\nCurrent: %s\n\nMasukkan tanggal kadaluarsa VPS baru:", currentExp)
+    sendMessage(bot, chatID, msg)
 }
 
 func startRenewUser(bot *tgbotapi.BotAPI, chatID int64, userID int64, data string) {
@@ -534,7 +571,6 @@ func systemInfo(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
         data := res["data"].(map[string]interface{})
         ipInfo, _ := getIpInfo()
         
-        // Get VPS Expiry Info for System Info as well
         vpsExpInfo := getVpsExpiryInfo()
         totalAcc := getTotalAccounts()
 
@@ -623,7 +659,7 @@ func performBackup(bot *tgbotapi.BotAPI, chatID int64) {
         "/etc/zivpn/users.json",
         "/etc/zivpn/domain",
         PublicUsageFile,
-        VpsExpiredFile, // Add VPS expired file to backup
+        VpsExpiredFile,
     }
 
     buf := new(bytes.Buffer)
@@ -714,7 +750,7 @@ func processRestoreFile(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, config *Bot
             "domain":           true,
             "apikey":           true,
             "public_usage.json": true,
-            "vps_expired":      true, // Allow restore vps expired
+            "vps_expired":      true,
         }
 
         if !validFiles[f.Name] {
@@ -755,7 +791,6 @@ func processRestoreFile(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, config *Bot
 // UI & Helpers
 // ==========================================
 
-// Function to get Total Accounts
 func getTotalAccounts() int {
     users, err := getUsers()
     if err != nil {
@@ -764,7 +799,6 @@ func getTotalAccounts() int {
     return len(users)
 }
 
-// Function to get VPS Expiry Countdown
 func getVpsExpiryInfo() string {
     data, err := ioutil.ReadFile(VpsExpiredFile)
     if err != nil {
@@ -773,15 +807,9 @@ func getVpsExpiryInfo() string {
 
     text := strings.TrimSpace(string(data))
     
-    // Try parsing date format YYYY-MM-DD
     expTime, err := time.Parse("2006-01-02", text)
     if err != nil {
-        // Try parsing Unix timestamp if date format fails
-        unixTime, err := strconv.ParseInt(text, 10, 64)
-        if err != nil {
-             return "Invalid Date Format"
-        }
-        expTime = time.Unix(unixTime, 0)
+        return "Invalid Date"
     }
 
     now := time.Now()
@@ -805,30 +833,27 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
         domain = "(Not Configured)"
     }
 
-    // Fetch additional info
     totalAcc := getTotalAccounts()
     vpsExp := getVpsExpiryInfo()
 
     msgText := fmt.Sprintf(
         "╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
-            "│ 🤖 RISWAN JABAR STORE ZIVPN UDP BOT \n"+
+            "│   🤖 RISWAN JABAR STORE ZIVPN UDP BOT \n"+
             "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
             "📍 INFORMASI SERVER\n"+
             "┌━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
-            "│ 🌐 Domain : `%s`\n"+
-            "│ 🏙️ City   : %s\n"+
-            "│ 📡 ISP    : %s\n"+
-            "│ 👥 Total Akun: %d\n"+
-            "│ ⏳ VPS Exp: %s\n"+
+            "│ 🌐 Domain /ip : `%s`\n"+
+            "│ 🏙️ City   : `%s`\n"+
+            "│ 📡 ISP    : `%s\n"+
+            "│ 👥 Total Akun: `%d`\n"+
+            "│ ⏳ VPS Exp: `%s`\n"+
             "└━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
             "👇 Pilih menu di bawah ini",
         domain, ipInfo.City, ipInfo.Isp, totalAcc, vpsExp,
     )
 
-    // Hapus pesan lama
     deleteLastMessage(bot, chatID)
 
-    // Kirim dengan Gambar (Logo)
     if BannerImageURL != "" {
         msg := tgbotapi.NewPhoto(chatID, tgbotapi.FileURL(BannerImageURL))
         msg.Caption = msgText
@@ -837,7 +862,6 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
 
         sentMsg, err := bot.Send(msg)
         if err != nil {
-            // Fallback jika gagal kirim gambar (misal link mati), kirim teks saja
             txtMsg := tgbotapi.NewMessage(chatID, msgText)
             txtMsg.ParseMode = "Markdown"
             txtMsg.ReplyMarkup = getMainMenuKeyboard(config, chatID)
@@ -845,7 +869,6 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
         }
         lastMessageIDs[chatID] = sentMsg.MessageID
     } else {
-        // Jika tidak ada link logo, kirim teks biasa
         msg := tgbotapi.NewMessage(chatID, msgText)
         msg.ParseMode = "Markdown"
         msg.ReplyMarkup = getMainMenuKeyboard(config, chatID)
@@ -878,6 +901,9 @@ func getMainMenuKeyboard(config *BotConfig, chatID int64) tgbotapi.InlineKeyboar
             ),
             tgbotapi.NewInlineKeyboardRow(
                 tgbotapi.NewInlineKeyboardButtonData("🧹 Cleanup Expired", "menu_cleanup"),
+                tgbotapi.NewInlineKeyboardButtonData("⏳ Set VPS Exp", "menu_set_vps_exp"), // Tombol Baru
+            ),
+            tgbotapi.NewInlineKeyboardRow(
                 tgbotapi.NewInlineKeyboardButtonData(modeLabel, "toggle_mode"),
             ),
         }
@@ -908,13 +934,13 @@ func sendAccountInfo(bot *tgbotapi.BotAPI, chatID int64, data map[string]interfa
         "╭──「 ✅ ACCOUNT DETAILS 」\n"+
             "│\n"+
             "│ 🔑 Password : `%s`\n"+
-            "│ 🌐 Domain   : `%s`\n"+
-            "│ 📅 Expired  : %s\n"+
+            "│ 🌐 Domain/ip : `%s`\n"+
+            "│ 📅 Expired  : `%s`\n"+
             "│\n"+
             "│ ─── Info Server ───\n"+
-            "│ 🏙️ City     : %s\n"+
-            "│ 📡 ISP      : %s\n"+
-            "│ 🌍 IP       : %s\n"+
+            "│ 🏙️ City : `%s`\n"+
+            "│ 📡 ISP : `%s`\n"+
+            "│ 🌍 IP : `%s`\n"+
             "│\n"+
             "╰── ⚡ Selamat Menggunakan!",
         data["password"],
