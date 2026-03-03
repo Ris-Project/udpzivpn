@@ -37,9 +37,13 @@ const (
 )
 
 // =====================================================
-// PENGATURAN DONASI
+// PENGATURAN GAMBAR (LOGO & DONASI)
 // =====================================================
-var DonationImageURL = "https://h.uguu.se/sPcpNuqw.jpg" // Link QR Code Donasi
+// Ganti link ini dengan link logo/banner bot Anda
+var BannerImageURL   = "https://d.uguu.se/FwuepgvZ.jpg" 
+
+// Link untuk QR Code Donasi
+var DonationImageURL = "https://h.uguu.se/sPcpNuqw.jpg"
 
 var ApiUrl = "http://127.0.0.1:" + PortFile + "/api"
 
@@ -164,11 +168,8 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
     switch {
     case query.Data == "menu_create":
         startCreateUser(bot, chatID, userID, config)
-    
-    // Tambahkan Handler untuk Donasi
     case query.Data == "menu_donasi":
         sendDonationInfo(bot, chatID)
-
     case query.Data == "menu_delete":
         if userID != config.AdminID {
             bot.Request(tgbotapi.NewCallback(query.ID, "Akses Ditolak"))
@@ -433,9 +434,7 @@ func toggleMode(bot *tgbotapi.BotAPI, chatID int64, userID int64, config *BotCon
     showMainMenu(bot, chatID, config)
 }
 
-// Fungsi baru untuk mengirim info donasi dengan gambar
 func sendDonationInfo(bot *tgbotapi.BotAPI, chatID int64) {
-    // Pesan menarik
     caption := `╭──「 ☕ DONASI & SUPPORT 」
 │
 │ Hai! Terima kasih telah menggunakan
@@ -454,12 +453,9 @@ func sendDonationInfo(bot *tgbotapi.BotAPI, chatID int64) {
 │ Terima kasih! ❤️
 ╰──────────────────────`
 
-    // Kirim gambar
     msg := tgbotapi.NewPhoto(chatID, tgbotapi.FileURL(DonationImageURL))
     msg.Caption = caption
     msg.ParseMode = "Markdown"
-    
-    // Tambah tombol kembali
     msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
         tgbotapi.NewInlineKeyboardRow(
             tgbotapi.NewInlineKeyboardButtonData("🔙 Kembali ke Menu", "cancel"),
@@ -771,10 +767,33 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
         domain, ipInfo.City, ipInfo.Isp,
     )
 
-    msg := tgbotapi.NewMessage(chatID, msgText)
-    msg.ParseMode = "Markdown"
-    msg.ReplyMarkup = getMainMenuKeyboard(config, chatID)
-    sendAndTrack(bot, msg)
+    // Hapus pesan lama
+    deleteLastMessage(bot, chatID)
+
+    // Kirim dengan Gambar (Logo)
+    if BannerImageURL != "" {
+        msg := tgbotapi.NewPhoto(chatID, tgbotapi.FileURL(BannerImageURL))
+        msg.Caption = msgText
+        msg.ParseMode = "Markdown"
+        msg.ReplyMarkup = getMainMenuKeyboard(config, chatID)
+        
+        sentMsg, err := bot.Send(msg)
+        if err != nil {
+            // Fallback jika gagal kirim gambar (misal link mati), kirim teks saja
+            txtMsg := tgbotapi.NewMessage(chatID, msgText)
+            txtMsg.ParseMode = "Markdown"
+            txtMsg.ReplyMarkup = getMainMenuKeyboard(config, chatID)
+            sentMsg, _ = bot.Send(txtMsg)
+        }
+        lastMessageIDs[chatID] = sentMsg.MessageID
+    } else {
+        // Jika tidak ada link logo, kirim teks biasa
+        msg := tgbotapi.NewMessage(chatID, msgText)
+        msg.ParseMode = "Markdown"
+        msg.ReplyMarkup = getMainMenuKeyboard(config, chatID)
+        sentMsg, _ := bot.Send(msg)
+        lastMessageIDs[chatID] = sentMsg.MessageID
+    }
 }
 
 func getMainMenuKeyboard(config *BotConfig, chatID int64) tgbotapi.InlineKeyboardMarkup {
@@ -807,14 +826,12 @@ func getMainMenuKeyboard(config *BotConfig, chatID int64) tgbotapi.InlineKeyboar
         return tgbotapi.NewInlineKeyboardMarkup(rows...)
     }
 
-    // Menu Public (Create Password + Donasi dengan Callback)
+    // Menu Public
     rows := [][]tgbotapi.InlineKeyboardButton{
         tgbotapi.NewInlineKeyboardRow(
             tgbotapi.NewInlineKeyboardButtonData("👤 Create Password", "menu_create"),
         ),
     }
-
-    // Tombol Donasi sekarang memanggil fungsi untuk menampilkan gambar
     rows = append(rows, tgbotapi.NewInlineKeyboardRow(
         tgbotapi.NewInlineKeyboardButtonData("☕ Donasi / Support", "menu_donasi"),
     ))
