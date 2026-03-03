@@ -41,6 +41,51 @@ echo -e "${BOLD}ZiVPN UDP Installer${RESET}"
 echo -e "${GRAY}AutoFTbot Edition${RESET}"
 echo ""
 
+# ==========================================
+# WELCOME MESSAGE & 5 MINUTE DELAY
+# ==========================================
+echo -e "${BOLD}${YELLOW}Selamat Datang!${RESET}"
+echo -e "Script akan memulai proses instalasi dalam ${RED}5 Menit${RESET}."
+echo -e "Tekan ${GREEN}[ENTER]${RESET} untuk melewati timer dan langsung mulai."
+echo ""
+
+# Loop Timer 300 Detik (5 Menit)
+for ((i=300; i>0; i--)); do
+    printf "\r${CYAN}Waktu Tersisa: %02d:%02d${RESET}   " $((i/60)) $((i%60))
+    
+    # Baca input dengan timeout 1 detik (menggunakan read -t 1)
+    # -s (silent) agar tidak menampilkan karakter yang ditekan
+    # -n 1 membaca 1 karakter (termasuk Enter)
+    if read -s -n 1 -t 1; then
+        echo ""
+        echo -e "${GREEN}Memulai instalasi...${RESET}"
+        break
+    fi
+done
+echo ""
+# ==========================================
+
+# ==========================================
+# IP REGISTRATION CHECK
+# ==========================================
+ALLOWED_IPS_URL="https://raw.githubusercontent.com/Ris-Project/udpzivpn/main/allowed_ips.txt"
+
+print_task "Checking IP Registration"
+MY_IP=$(curl -s ipinfo.io/ip)
+
+if [[ -z "$MY_IP" ]]; then
+    echo -e "\r${YELLOW}!${RESET} Failed to get Public IP. Skipping check..."
+else
+    ALLOWED_LIST=$(curl -s "$ALLOWED_IPS_URL")
+    
+    if echo "$ALLOWED_LIST" | grep -qw "$MY_IP"; then
+        print_done "IP Authorized: $MY_IP"
+    else
+        print_fail "IP $MY_IP is not registered."
+    fi
+fi
+# ==========================================
+
 if [[ "$(uname -s)" != "Linux" ]] || [[ "$(uname -m)" != "x86_64" ]]; then
   print_fail "System not supported (Linux AMD64 only)"
 fi
@@ -238,7 +283,7 @@ fi
 run_silent "Starting Services" "systemctl enable zivpn.service && systemctl start zivpn.service && systemctl enable zivpn-api.service && systemctl start zivpn-api.service"
 
 # Setup Cron for Auto-Expire
-echo -e "${YELLOW}Setting up Cron Job for Auto-Expire...${NC}"
+echo -e "${YELLOW}Setting up Cron Job for Auto-Expire...${RESET}"
 cron_cmd="0 0 * * * /usr/bin/curl -s -X POST -H \"X-API-Key: \$(cat /etc/zivpn/apikey)\" http://127.0.0.1:\$(cat /etc/zivpn/api_port)/api/cron/expire >> /var/log/zivpn-cron.log 2>&1"
 (crontab -l 2>/dev/null | grep -v "/api/cron/expire"; echo "$cron_cmd") | crontab -
 print_done "Cron Job Configured"
@@ -258,4 +303,3 @@ echo -e "API     : ${CYAN}$API_PORT${RESET}"
 echo -e "Token   : ${CYAN}$api_key${RESET}"
 echo -e "Dev     : ${CYAN}https://wa.me/6285888801241${RESET}"
 echo ""
-ganti repo jadi Ris-Project/udpzivpn
