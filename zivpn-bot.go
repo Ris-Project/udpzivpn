@@ -48,7 +48,7 @@ var ApiUrl = "http://127.0.0.1:" + PortFile + "/api"
 var ApiKey = "AutoFtBot-agskjgdvsbdreiWG1234512SDKrqw"
 
 // Target Donasi (Rp 80.000)
-const DonationTarget = 80000
+const DonationTarget = 90000
 
 type BotConfig struct {
     BotToken string `json:"bot_token"`
@@ -941,7 +941,7 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
             "│ 🏙️ City   : %s\n"+
             "│ 📡 ISP    : %s\n"+
             "│ 👥 Total Akun: %d\n"+
-            "│ 💰 Donasi : Rp %s\n"+ // Baris baru ditambahkan di sini
+            "│ 💰 jumlah Donasi : Rp %s Target 90.000\n"+ // Baris baru ditambahkan di sini
             "│ ⏳ VPS Exp: %s\n"+
             "└━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
             "👇 Pilih menu di bawah ini",
@@ -1039,7 +1039,6 @@ func sendAccountInfo(bot *tgbotapi.BotAPI, chatID int64, data map[string]interfa
             "│ ─── Info Server ───\n"+
             "│ 🏙️ City     : %s\n"+
             "│ 📡 ISP      : %s\n"+
-            "│ 🌍 IP       : %s\n"+
             "│\n"+
             "╰── ⚡ Selamat Menggunakan!",
         data["password"],
