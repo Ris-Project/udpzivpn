@@ -1010,24 +1010,17 @@ func getMainMenuKeyboard(config *BotConfig, chatID int64) tgbotapi.InlineKeyboar
     }
 
     // Menu Public
-rows := [][]tgbotapi.InlineKeyboardButton{
-    tgbotapi.NewInlineKeyboardRow(
-        tgbotapi.NewInlineKeyboardButtonData("👤 Create Password", "menu_create"),
-    ),
+    rows := [][]tgbotapi.InlineKeyboardButton{
+        tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonData("👤 Create Password", "menu_create"),
+        ),
+    }
+    rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonData("☕ Donasi / Support", "menu_donasi"),
+    ))
+
+    return tgbotapi.NewInlineKeyboardMarkup(rows...)
 }
-
-// Tambah Tutorial + Download (1 baris)
-rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-    tgbotapi.NewInlineKeyboardButtonURL("📺 Tutorial di youtube", "https://youtu.be/rxBWuHoPt1I?si=HzlfVnoXMfyq_8lr"),
-    tgbotapi.NewInlineKeyboardButtonURL("📥 Apk minizivpn", "https://sfile.co/wI2ojlwjJLR"),
-))
-
-// Donasi
-rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-    tgbotapi.NewInlineKeyboardButtonData("☕ Donasi / Support", "menu_donasi"),
-))
-
-return tgbotapi.NewInlineKeyboardMarkup(rows...)
 
 func sendAccountInfo(bot *tgbotapi.BotAPI, chatID int64, data map[string]interface{}, config *BotConfig) {
     ipInfo, _ := getIpInfo()
