@@ -36,6 +36,11 @@ const (
     PublicCooldownDays = 6
 )
 
+// =====================================================
+// PENGATURAN DONASI
+// =====================================================
+var DonationImageURL = "https://h.uguu.se/sPcpNuqw.jpg" // Link QR Code Donasi
+
 var ApiUrl = "http://127.0.0.1:" + PortFile + "/api"
 
 var ApiKey = "AutoFtBot-agskjgdvsbdreiWG1234512SDKrqw"
@@ -159,6 +164,11 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
     switch {
     case query.Data == "menu_create":
         startCreateUser(bot, chatID, userID, config)
+    
+    // Tambahkan Handler untuk Donasi
+    case query.Data == "menu_donasi":
+        sendDonationInfo(bot, chatID)
+
     case query.Data == "menu_delete":
         if userID != config.AdminID {
             bot.Request(tgbotapi.NewCallback(query.ID, "Akses Ditolak"))
@@ -237,7 +247,6 @@ func handleState(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, state string, conf
             return
         }
 
-        // Validasi Public
         if config.Mode == "public" && userID != config.AdminID {
             if daysInt > PublicMaxDays {
                 sendMessage(bot, chatID, fmt.Sprintf("❌ Durasi maksimal adalah %d hari.", PublicMaxDays))
@@ -258,29 +267,23 @@ func handleState(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, state string, conf
             }
         }
 
-        // == PROSES PEMBUATAN DENGAN ANIMASI ==
         username := tempUserData[userID]["username"]
-        resetState(userID) // Reset state dulu agar tidak ngeflood jika error
+        resetState(userID)
 
-        // 1. Kirim pesan loading awal
         loadingMsg := tgbotapi.NewMessage(chatID, "⏳ Membuat Akun...")
         sentMsg, _ := bot.Send(loadingMsg)
 
-        // 2. Jalankan animasi di background
         stopAnim := make(chan bool)
         go animateLoading(bot, chatID, sentMsg.MessageID, stopAnim)
 
-        // 3. Panggil API
         res, err := apiCall("POST", "/user/create", map[string]interface{}{
             "password": username,
             "days":     daysInt,
         })
 
-        // 4. Hentikan animasi & hapus pesan loading
         stopAnim <- true
         bot.Request(tgbotapi.NewDeleteMessage(chatID, sentMsg.MessageID))
 
-        // 5. Tampilkan hasil
         if err != nil {
             replyError(bot, chatID, "Error API: "+err.Error())
             showMainMenu(bot, chatID, config)
@@ -303,11 +306,10 @@ func handleState(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, state string, conf
         if !ok {
             return
         }
-        
+
         username := tempUserData[userID]["username"]
         resetState(userID)
 
-        // Animasi Loading Renew
         loadingMsg := tgbotapi.NewMessage(chatID, "⏳ Memperbarui Akun...")
         sentMsg, _ := bot.Send(loadingMsg)
         stopAnim := make(chan bool)
@@ -348,11 +350,10 @@ func animateLoading(bot *tgbotapi.BotAPI, chatID int64, msgID int, stop <-chan b
         case <-stop:
             return
         default:
-            // Edit pesan dengan frame berikutnya
             edit := tgbotapi.NewEditMessageText(chatID, msgID, frames[i%3])
             bot.Send(edit)
             i++
-            time.Sleep(500 * time.Millisecond) // Kecepatan animasi
+            time.Sleep(500 * time.Millisecond)
         }
     }
 }
@@ -430,6 +431,46 @@ func toggleMode(bot *tgbotapi.BotAPI, chatID int64, userID int64, config *BotCon
     }
     saveConfig(config)
     showMainMenu(bot, chatID, config)
+}
+
+// Fungsi baru untuk mengirim info donasi dengan gambar
+func sendDonationInfo(bot *tgbotapi.BotAPI, chatID int64) {
+    // Pesan menarik
+    caption := `╭──「 ☕ DONASI & SUPPORT 」
+│
+│ Hai! Terima kasih telah menggunakan
+│ layanan bot ini. 🤖
+│
+│ Jika kamu merasa terbantu, dukung
+│ developer dengan seikhlasnya agar
+│ bot bisa terus berjalan. 🚀
+│
+│ 💳 Scan QR Code di atas
+│
+│ Donasi akan digunakan untuk:
+│ • Biaya Server/VPS 💸
+│ • Secangkir Kopi ☕
+│
+│ Terima kasih! ❤️
+╰──────────────────────`
+
+    // Kirim gambar
+    msg := tgbotapi.NewPhoto(chatID, tgbotapi.FileURL(DonationImageURL))
+    msg.Caption = caption
+    msg.ParseMode = "Markdown"
+    
+    // Tambah tombol kembali
+    msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+        tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonData("🔙 Kembali ke Menu", "cancel"),
+        ),
+    )
+
+    deleteLastMessage(bot, chatID)
+    sentMsg, err := bot.Send(msg)
+    if err == nil {
+        lastMessageIDs[chatID] = sentMsg.MessageID
+    }
 }
 
 func deleteUser(bot *tgbotapi.BotAPI, chatID int64, username string, config *BotConfig) {
@@ -766,11 +807,18 @@ func getMainMenuKeyboard(config *BotConfig, chatID int64) tgbotapi.InlineKeyboar
         return tgbotapi.NewInlineKeyboardMarkup(rows...)
     }
 
+    // Menu Public (Create Password + Donasi dengan Callback)
     rows := [][]tgbotapi.InlineKeyboardButton{
         tgbotapi.NewInlineKeyboardRow(
             tgbotapi.NewInlineKeyboardButtonData("👤 Create Password", "menu_create"),
         ),
     }
+
+    // Tombol Donasi sekarang memanggil fungsi untuk menampilkan gambar
+    rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonData("☕ Donasi / Support", "menu_donasi"),
+    ))
+
     return tgbotapi.NewInlineKeyboardMarkup(rows...)
 }
 
