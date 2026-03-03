@@ -34,13 +34,14 @@ const (
     PublicUsageFile    = "/etc/zivpn/public_usage.json"
     PublicMaxDays      = 7
     PublicCooldownDays = 6
+    VpsExpiredFile     = "/etc/zivpn/vps_expired" // File untuk tanggal expired VPS
 )
 
 // =====================================================
 // PENGATURAN GAMBAR (LOGO & DONASI)
 // =====================================================
 // Ganti link ini dengan link logo/banner bot Anda
-var BannerImageURL   = "https://d.uguu.se/FwuepgvZ.jpg" 
+var BannerImageURL = "https://d.uguu.se/FwuepgvZ.jpg"
 
 // Link untuk QR Code Donasi
 var DonationImageURL = "https://h.uguu.se/sPcpNuqw.jpg"
@@ -532,18 +533,24 @@ func systemInfo(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
     if res["success"] == true {
         data := res["data"].(map[string]interface{})
         ipInfo, _ := getIpInfo()
+        
+        // Get VPS Expiry Info for System Info as well
+        vpsExpInfo := getVpsExpiryInfo()
+        totalAcc := getTotalAccounts()
 
         msg := fmt.Sprintf(
             "📊 「 SERVER INFORMATION 」\n\n"+
                 "🌐 Domain    : `%s`\n"+
                 "🌍 IP Public : `%s`\n"+
                 "🔌 Port      : `%s`\n"+
-                "🟢 Service   : %s\n\n"+
+                "🟢 Service   : %s\n"+
+                "👥 Total Akun: %d\n"+
+                "⏳ VPS Exp   : %s\n\n"+
                 "━━━━━━━━━━━━━━━━━━━━━\n"+
                 "📍 Location  : %s\n"+
                 "📡 ISP       : %s\n"+
                 "━━━━━━━━━━━━━━━━━━━━━",
-            config.Domain, data["public_ip"], data["port"], data["service"], ipInfo.City, ipInfo.Isp)
+            config.Domain, data["public_ip"], data["port"], data["service"], totalAcc, vpsExpInfo, ipInfo.City, ipInfo.Isp)
 
         reply := tgbotapi.NewMessage(chatID, msg)
         reply.ParseMode = "Markdown"
@@ -616,6 +623,7 @@ func performBackup(bot *tgbotapi.BotAPI, chatID int64) {
         "/etc/zivpn/users.json",
         "/etc/zivpn/domain",
         PublicUsageFile,
+        VpsExpiredFile, // Add VPS expired file to backup
     }
 
     buf := new(bytes.Buffer)
@@ -706,6 +714,7 @@ func processRestoreFile(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, config *Bot
             "domain":           true,
             "apikey":           true,
             "public_usage.json": true,
+            "vps_expired":      true, // Allow restore vps expired
         }
 
         if !validFiles[f.Name] {
@@ -746,6 +755,49 @@ func processRestoreFile(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, config *Bot
 // UI & Helpers
 // ==========================================
 
+// Function to get Total Accounts
+func getTotalAccounts() int {
+    users, err := getUsers()
+    if err != nil {
+        return 0
+    }
+    return len(users)
+}
+
+// Function to get VPS Expiry Countdown
+func getVpsExpiryInfo() string {
+    data, err := ioutil.ReadFile(VpsExpiredFile)
+    if err != nil {
+        return "Unknown (File not found)"
+    }
+
+    text := strings.TrimSpace(string(data))
+    
+    // Try parsing date format YYYY-MM-DD
+    expTime, err := time.Parse("2006-01-02", text)
+    if err != nil {
+        // Try parsing Unix timestamp if date format fails
+        unixTime, err := strconv.ParseInt(text, 10, 64)
+        if err != nil {
+             return "Invalid Date Format"
+        }
+        expTime = time.Unix(unixTime, 0)
+    }
+
+    now := time.Now()
+    
+    if now.After(expTime) {
+        return "❌ EXPIRED"
+    }
+
+    duration := expTime.Sub(now)
+    days := int(duration.Hours()) / 24
+    hours := int(duration.Hours()) % 24
+    minutes := int(duration.Minutes()) % 60
+
+    return fmt.Sprintf("%d Hari %d Jam %d Menit", days, hours, minutes)
+}
+
 func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
     ipInfo, _ := getIpInfo()
     domain := config.Domain
@@ -753,18 +805,24 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
         domain = "(Not Configured)"
     }
 
+    // Fetch additional info
+    totalAcc := getTotalAccounts()
+    vpsExp := getVpsExpiryInfo()
+
     msgText := fmt.Sprintf(
         "╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
-            "│ 🤖RISWAN JABAR STORE  ZIVPN UDP BOT \n"+
+            "│ 🤖 RISWAN JABAR STORE ZIVPN UDP BOT \n"+
             "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
             "📍 INFORMASI SERVER\n"+
             "┌━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
             "│ 🌐 Domain : `%s`\n"+
             "│ 🏙️ City   : %s\n"+
             "│ 📡 ISP    : %s\n"+
+            "│ 👥 Total Akun: %d\n"+
+            "│ ⏳ VPS Exp: %s\n"+
             "└━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
             "👇 Pilih menu di bawah ini",
-        domain, ipInfo.City, ipInfo.Isp,
+        domain, ipInfo.City, ipInfo.Isp, totalAcc, vpsExp,
     )
 
     // Hapus pesan lama
@@ -776,7 +834,7 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
         msg.Caption = msgText
         msg.ParseMode = "Markdown"
         msg.ReplyMarkup = getMainMenuKeyboard(config, chatID)
-        
+
         sentMsg, err := bot.Send(msg)
         if err != nil {
             // Fallback jika gagal kirim gambar (misal link mati), kirim teks saja
