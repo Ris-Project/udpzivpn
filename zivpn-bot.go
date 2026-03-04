@@ -41,12 +41,11 @@ const (
 // =====================================================
 // PENGATURAN WAJIB JOIN GRUP
 // =====================================================
-// ID Grup/Channel Target (Sesuai permintaan: -1003589324912)
+// ID Grup/Channel Target
 const RequiredGroupID int64 = -1003589324912
 
-// Link Undangan Grup/Channel (Ganti dengan link invite anda jika belum ada username public)
-// Contoh: "https://t.me/namagrup" atau "https://t.me/+AbCdEfGhIjKl"
-var RequiredGroupLink = "https://t.me/grupudp" // SILAHKAN GANTI LINK INI
+// Link Undangan Grup/Channel (GANTI DENGAN LINK ANDA)
+var RequiredGroupLink = "https://t.me/+ChangeThisLink"
 
 // =====================================================
 // PENGATURAN GAMBAR (LOGO & DONASI)
@@ -144,7 +143,6 @@ func main() {
 // Helper: Check Membership
 // ==========================================
 
-// checkMembership memeriksa apakah user adalah member dari grup RequiredGroupID
 func checkMembership(bot *tgbotapi.BotAPI, userID int64) bool {
     chatConfig := tgbotapi.GetChatMemberConfig{
         ChatConfigWithUser: tgbotapi.ChatConfigWithUser{
@@ -159,11 +157,9 @@ func checkMembership(bot *tgbotapi.BotAPI, userID int64) bool {
         return false
     }
 
-    // Status yang dianggap valid: Creator, Administrator, Member
     return member.Status == "creator" || member.Status == "administrator" || member.Status == "member"
 }
 
-// sendMustJoinMessage mengirim pesan peringatan agar user join ke grup
 func sendMustJoinMessage(bot *tgbotapi.BotAPI, chatID int64) {
     msg := tgbotapi.NewMessage(chatID, "⛔ **AKSES DITOLAK**\n\nAnda harus bergabung ke grup/channel kami terlebih dahulu untuk menggunakan bot ini.")
     msg.ParseMode = "Markdown"
@@ -183,15 +179,12 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, config *BotConfi
     userID := msg.From.ID
     chatID := msg.Chat.ID
 
-    // Logika Akses
     if userID != config.AdminID {
-        // Jika mode private dan bukan admin
         if config.Mode == "private" {
             replyError(bot, chatID, "⛔ Akses Ditolak. Bot ini bersifat Private.")
             return
         }
 
-        // Jika mode public, cek keanggotaan grup
         if config.Mode == "public" {
             if !checkMembership(bot, userID) {
                 sendMustJoinMessage(bot, chatID)
@@ -226,14 +219,12 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
     userID := query.From.ID
     chatID := query.Message.Chat.ID
 
-    // Logika Akses
     if userID != config.AdminID {
         if config.Mode == "private" {
             bot.Request(tgbotapi.NewCallback(query.ID, "Akses Ditolak"))
             return
         }
 
-        // Jika mode public, cek keanggotaan grup
         if config.Mode == "public" {
             if !checkMembership(bot, userID) {
                 bot.Request(tgbotapi.NewCallbackWithAlert(query.ID, "⛔ Anda wajib join grup terlebih dahulu!"))
@@ -243,7 +234,6 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
         }
     }
 
-    // Khusus toggle mode, harus admin (cek tambahan jika logika atas berubah)
     if query.Data == "toggle_mode" && userID != config.AdminID {
         return
     }
@@ -387,7 +377,14 @@ func handleState(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, state string, conf
                 savePublicUsage(userID)
             }
             data := res["data"].(map[string]interface{})
+            
+            // Kirim info akun ke user
             sendAccountInfo(bot, chatID, data, config)
+
+            // NOTIFIKASI KE GRUP DENGAN DATA TERSENSOR
+            if userID != config.AdminID {
+                sendAdminCreationNotif(bot, RequiredGroupID, msg.From, data, daysInt)
+            }
         } else {
             replyError(bot, chatID, fmt.Sprintf("Gagal: %s", res["message"]))
             showMainMenu(bot, chatID, config)
@@ -839,7 +836,7 @@ func performBackup(bot *tgbotapi.BotAPI, chatID int64) {
 }
 
 // ==========================================
-// FITUR BARU: Auto Backup Scheduler
+// FITUR: Auto Backup Scheduler
 // ==========================================
 func startAutoBackupScheduler(bot *tgbotapi.BotAPI, adminID int64) {
     ticker := time.NewTicker(4 * time.Hour)
@@ -939,6 +936,45 @@ func processRestoreFile(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, config *Bot
 }
 
 // ==========================================
+// FITUR BARU: Notifikasi ke Grup (Dengan Sensor)
+// ==========================================
+
+// Helper untuk menyensor string (menampilkan 3 karakter pertama saja)
+func sensorPassword(s string) string {
+    if len(s) <= 3 {
+        return "***"
+    }
+    return s[:3] + strings.Repeat("*", len(s)-3)
+}
+
+func sendAdminCreationNotif(bot *tgbotapi.BotAPI, targetChatID int64, user *tgbotapi.User, data map[string]interface{}, days int) {
+    userName := user.FirstName
+    if user.LastName != "" {
+        userName += " " + user.LastName
+    }
+    // Membuat link user tanpa menampilkan ID mentah
+    userLink := fmt.Sprintf("<a href=\"tg://user?id=%d\">%s</a>", user.ID, userName)
+
+    // Sensor password sebelum dikirim
+    passRaw := fmt.Sprintf("%v", data["password"])
+    censoredPass := sensorPassword(passRaw)
+
+    msgText := fmt.Sprintf(
+        "📢 <b>NOTIFIKASI PEMBUATAN AKUN</b>\n\n"+
+            "👤 <b>User:</b> %s\n"+
+            "➕ <b>Status:</b> Telah membuat akun baru\n\n"+
+            "🔑 <b>Password:</b> <code>%s</code>\n"+
+            "⏳ <b>Durasi:</b> %d Hari\n"+
+            "📅 <b>Expired:</b> %s",
+        userLink, censoredPass, days, data["expired"],
+    )
+
+    msg := tgbotapi.NewMessage(targetChatID, msgText)
+    msg.ParseMode = "HTML"
+    bot.Send(msg)
+}
+
+// ==========================================
 // UI & Helpers
 // ==========================================
 
@@ -977,7 +1013,6 @@ func getVpsExpiryInfo() string {
     return fmt.Sprintf("%d Hari %d Jam %d Menit", days, hours, minutes)
 }
 
-// Fungsi Helper untuk Format Rupiah (Titik pemisah ribuan)
 func formatRupiah(n int) string {
     s := strconv.Itoa(n)
     result := ""
@@ -1002,7 +1037,6 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
     totalAcc := getTotalAccounts()
     vpsExp := getVpsExpiryInfo()
 
-    // Load Donasi
     donationData := loadDonationData()
     donationAmount := formatRupiah(donationData.Collected)
 
@@ -1084,24 +1118,20 @@ func getMainMenuKeyboard(config *BotConfig, chatID int64) tgbotapi.InlineKeyboar
         return tgbotapi.NewInlineKeyboardMarkup(rows...)
     }
 
-    // Menu Public
     rows := [][]tgbotapi.InlineKeyboardButton{
         tgbotapi.NewInlineKeyboardRow(
             tgbotapi.NewInlineKeyboardButtonData("👤 Create Password", "menu_create"),
         ),
     }
 
-    // Tambah Tutorial
     rows = append(rows, tgbotapi.NewInlineKeyboardRow(
         tgbotapi.NewInlineKeyboardButtonURL("📺 Tutorial di youtube", "https://youtu.be/rxBWuHoPt1I?si=HzlfVnoXMfyq_8lr"),
     ))
 
-    // Tambah Download MiniZIVPN
     rows = append(rows, tgbotapi.NewInlineKeyboardRow(
         tgbotapi.NewInlineKeyboardButtonURL("📥 Download MiniZIVPN", "https://sfile.co/wI2ojlwjJLR"),
     ))
 
-    // Donasi
     rows = append(rows, tgbotapi.NewInlineKeyboardRow(
         tgbotapi.NewInlineKeyboardButtonData("☕ Donasi / Support", "menu_donasi"),
     ))
