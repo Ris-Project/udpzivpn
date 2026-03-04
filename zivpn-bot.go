@@ -45,7 +45,7 @@ const (
 const RequiredGroupID int64 = -1003589324912
 
 // Link Undangan Grup/Channel (GANTI DENGAN LINK ANDA)
-var RequiredGroupLink = "https://t.me/+ChangeThisLink"
+var RequiredGroupLink = "https://t.me/grupudp"
 
 // =====================================================
 // PENGATURAN GAMBAR (LOGO & DONASI)
