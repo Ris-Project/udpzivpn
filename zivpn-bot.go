@@ -36,10 +36,17 @@ const (
     PublicCooldownDays = 6
     VpsExpiredFile     = "/etc/zivpn/vps_expired"
     DonationDataFile   = "/etc/zivpn/donation_data.json"
-    
-    // Grup wajib join saat mode public
-    RequiredGroup      = "@grupudp" 
 )
+
+// =====================================================
+// PENGATURAN WAJIB JOIN GRUP
+// =====================================================
+// ID Grup/Channel Target (Sesuai permintaan: -1003589324912)
+const RequiredGroupID int64 = -1003589324912
+
+// Link Undangan Grup/Channel (Ganti dengan link invite anda jika belum ada username public)
+// Contoh: "https://t.me/namagrup" atau "https://t.me/+AbCdEfGhIjKl"
+var RequiredGroupLink = "https://t.me/grupudp" // SILAHKAN GANTI LINK INI
 
 // =====================================================
 // PENGATURAN GAMBAR (LOGO & DONASI)
@@ -134,20 +141,62 @@ func main() {
 }
 
 // ==========================================
+// Helper: Check Membership
+// ==========================================
+
+// checkMembership memeriksa apakah user adalah member dari grup RequiredGroupID
+func checkMembership(bot *tgbotapi.BotAPI, userID int64) bool {
+    chatConfig := tgbotapi.GetChatMemberConfig{
+        ChatConfigWithUser: tgbotapi.ChatConfigWithUser{
+            ChatID: RequiredGroupID,
+            UserID: userID,
+        },
+    }
+
+    member, err := bot.GetChatMember(chatConfig)
+    if err != nil {
+        log.Printf("Gagal mendapatkan status member untuk user %d: %v", userID, err)
+        return false
+    }
+
+    // Status yang dianggap valid: Creator, Administrator, Member
+    return member.Status == "creator" || member.Status == "administrator" || member.Status == "member"
+}
+
+// sendMustJoinMessage mengirim pesan peringatan agar user join ke grup
+func sendMustJoinMessage(bot *tgbotapi.BotAPI, chatID int64) {
+    msg := tgbotapi.NewMessage(chatID, "⛔ **AKSES DITOLAK**\n\nAnda harus bergabung ke grup/channel kami terlebih dahulu untuk menggunakan bot ini.")
+    msg.ParseMode = "Markdown"
+    msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+        tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonURL("📢 Join Grup Sekarang", RequiredGroupLink),
+        ),
+    )
+    bot.Send(msg)
+}
+
+// ==========================================
 // Telegram Event Handlers
 // ==========================================
 
 func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, config *BotConfig) {
-    if !isAllowed(config, msg.From.ID) {
-        replyError(bot, msg.Chat.ID, "⛔ Akses Ditolak. Bot ini bersifat Private.")
-        return
-    }
+    userID := msg.From.ID
+    chatID := msg.Chat.ID
 
-    // CEK KEANGGOTAAN GRUP UNTUK MODE PUBLIC
-    if config.Mode == "public" && msg.From.ID != config.AdminID {
-        if !isUserJoined(bot, msg.From.ID) {
-            sendMustJoinMessage(bot, msg.Chat.ID)
+    // Logika Akses
+    if userID != config.AdminID {
+        // Jika mode private dan bukan admin
+        if config.Mode == "private" {
+            replyError(bot, chatID, "⛔ Akses Ditolak. Bot ini bersifat Private.")
             return
+        }
+
+        // Jika mode public, cek keanggotaan grup
+        if config.Mode == "public" {
+            if !checkMembership(bot, userID) {
+                sendMustJoinMessage(bot, chatID)
+                return
+            }
         }
     }
 
@@ -174,23 +223,29 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, config *BotConfi
 }
 
 func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config *BotConfig) {
-    if !isAllowed(config, query.From.ID) {
-        if query.Data != "toggle_mode" || query.From.ID != config.AdminID {
+    userID := query.From.ID
+    chatID := query.Message.Chat.ID
+
+    // Logika Akses
+    if userID != config.AdminID {
+        if config.Mode == "private" {
             bot.Request(tgbotapi.NewCallback(query.ID, "Akses Ditolak"))
             return
         }
+
+        // Jika mode public, cek keanggotaan grup
+        if config.Mode == "public" {
+            if !checkMembership(bot, userID) {
+                bot.Request(tgbotapi.NewCallbackWithAlert(query.ID, "⛔ Anda wajib join grup terlebih dahulu!"))
+                sendMustJoinMessage(bot, chatID)
+                return
+            }
+        }
     }
 
-    chatID := query.Message.Chat.ID
-    userID := query.From.ID
-
-    // CEK KEANGGOTAAN GRUP UNTUK MODE PUBLIC
-    if config.Mode == "public" && userID != config.AdminID {
-        if !isUserJoined(bot, userID) {
-            bot.Request(tgbotapi.NewCallback(query.ID, "⛔ Anda harus join grup @grupudp terlebih dahulu!"))
-            sendMustJoinMessage(bot, chatID)
-            return
-        }
+    // Khusus toggle mode, harus admin (cek tambahan jika logika atas berubah)
+    if query.Data == "toggle_mode" && userID != config.AdminID {
+        return
     }
 
     switch {
@@ -258,41 +313,6 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
     }
 
     bot.Request(tgbotapi.NewCallback(query.ID, ""))
-}
-
-// ==========================================
-// Membership Check Helper
-// ==========================================
-
-// isUserJoined memeriksa apakah user sudah join ke RequiredGroup
-func isUserJoined(bot *tgbotapi.BotAPI, userID int64) bool {
-    chatConfig := tgbotapi.GetChatMemberConfig{
-        ChatConfigWithUser: tgbotapi.ChatConfigWithUser{
-            ChannelUsername: RequiredGroup,
-            UserID:          userID,
-        },
-    }
-
-    member, err := bot.GetChatMember(chatConfig)
-    if err != nil {
-        log.Printf("Gagal cek keanggotaan user %d: %v", userID, err)
-        return false
-    }
-
-    // Status yang dianggap valid: Creator, Administrator, Member
-    return member.Status == "member" || member.Status == "administrator" || member.Status == "creator"
-}
-
-// sendMustJoinMessage mengirim pesan peringatan untuk join grup
-func sendMustJoinMessage(bot *tgbotapi.BotAPI, chatID int64) {
-    msg := tgbotapi.NewMessage(chatID, "⛔ **AKSES DITOLAK**\n\nUntuk menggunakan bot ini, Anda wajib bergabung ke channel/grup kami terlebih dahulu.")
-    msg.ParseMode = "Markdown"
-    msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
-        tgbotapi.NewInlineKeyboardRow(
-            tgbotapi.NewInlineKeyboardButtonURL("📢 Join Grup @grupudp", "https://t.me/grupudp"),
-        ),
-    )
-    bot.Send(msg)
 }
 
 func handleState(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, state string, config *BotConfig) {
@@ -981,7 +1001,7 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
 
     totalAcc := getTotalAccounts()
     vpsExp := getVpsExpiryInfo()
-    
+
     // Load Donasi
     donationData := loadDonationData()
     donationAmount := formatRupiah(donationData.Collected)
@@ -996,7 +1016,7 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
             "│ 🏙️ City   : %s\n"+
             "│ 📡 ISP    : %s\n"+
             "│ 👥 Total Akun: %d\n"+
-            "│ 💰 Jumlah Donasi : Rp %s Target 90.000\n"+
+            "│ 💰 jumlah Donasi : Rp %s Target 90.000\n"+
             "│ ⏳ VPS Exp: %s\n"+
             "└━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
             "👇 Pilih menu di bawah ini",
@@ -1246,10 +1266,6 @@ func validateNumber(bot *tgbotapi.BotAPI, chatID int64, text string, min, max in
 // ==========================================
 // Configuration & Utils
 // ==========================================
-
-func isAllowed(config *BotConfig, userID int64) bool {
-    return config.Mode == "public" || userID == config.AdminID
-}
 
 func saveConfig(config *BotConfig) error {
     data, err := json.MarshalIndent(config, "", "  ")
