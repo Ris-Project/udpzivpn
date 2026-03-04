@@ -115,11 +115,11 @@ func main() {
     bot.Debug = false
     log.Printf("Authorized on account %s", bot.Self.UserName)
 
-    // =====================================================
-    // JADWAL OTOMATIS (BACKUP & CLEANUP)
-    // =====================================================
+    // Scheduler Backup setiap 4 jam
     go startAutoBackupScheduler(bot, config.AdminID)
-    go startAutoCleanupScheduler(bot, config.AdminID) // FITUR BARU: Hapus expired otomatis
+    
+    // Scheduler Auto Expired setiap hari jam 00:01
+    go startExpiredAccountScheduler(bot, config.AdminID)
 
     u := tgbotapi.NewUpdate(0)
     u.Timeout = 60
@@ -427,7 +427,7 @@ func startCreateUser(bot *tgbotapi.BotAPI, chatID int64, userID int64, config *B
                     remainingHours := int(remaining.Hours())
                     days := remainingHours / 24
                     hours := remainingHours % 24
-                    replyError(bot, chatID, fmt.Sprintf("⛔ Anda sudah membuat akun sebelumnya.\nHarap tunggu sekitar %d hari %d jam lagi.", days, hours))
+                    replyError(bot, chatID, fmt.Sprintf("⛔ Anda sudah membuat akun sebelumnya.\n🙏 Harap tunggu sekitar %d hari %d jam lagi.", days, hours))
                     return
                 }
             }
@@ -783,40 +783,60 @@ func startAutoBackupScheduler(bot *tgbotapi.BotAPI, adminID int64) {
 }
 
 // ==========================================
-// FITUR BARU: Auto Cleanup Scheduler (Otomatis)
+// FITUR BARU: Auto Expired Account Scheduler (Setiap Jam 00:01)
 // ==========================================
-func startAutoCleanupScheduler(bot *tgbotapi.BotAPI, adminID int64) {
-    // Cek setiap 6 Jam. Ubah ke 24*time.Hour jika ingin sekali sehari.
-    ticker := time.NewTicker(6 * time.Hour)
-    defer ticker.Stop()
+func startExpiredAccountScheduler(bot *tgbotapi.BotAPI, adminID int64) {
+    for {
+        now := time.Now()
+        // Hitung waktu jam 00:01 hari ini
+        nextRun := time.Date(now.Year(), now.Month(), now.Day(), 0, 1, 0, 0, now.Location())
+        
+        // Jika sekarang sudah lewat jam 00:01, jadwalkan untuk besok
+        if now.After(nextRun) {
+            nextRun = nextRun.Add(24 * time.Hour)
+        }
 
-    log.Printf("🗑️ Auto Cleanup Scheduler aktif (Cek setiap 6 jam).")
+        waitDuration := nextRun.Sub(now)
+        log.Printf("⏰ Scheduler Expired Akun: Berjalan dalam %v (pada %s)", waitDuration, nextRun.Format("2006-01-02 15:04:05"))
 
-    for range ticker.C {
-        log.Println("🔄 Menjalankan pembersihan akun expired otomatis...")
-        checkAndCleanup(bot, adminID)
-    }
-}
+        // Tunggu hingga waktunya tiba
+        time.Sleep(waitDuration)
 
-func checkAndCleanup(bot *tgbotapi.BotAPI, adminID int64) {
-    res, err := apiCall("POST", "/cron/cleanup", nil)
-    if err != nil {
-        log.Printf("❌ Error Auto Cleanup: %v", err)
-        return
-    }
+        log.Println("🧹 Menjalankan pembersihan akun expired otomatis...")
+        
+        // Panggil API Cleanup
+        res, err := apiCall("POST", "/cron/cleanup", nil)
+        
+        if err != nil {
+            log.Printf("Error Auto Cleanup: %v", err)
+            msg := tgbotapi.NewMessage(adminID, fmt.Sprintf("❌ Error Auto Cleanup: %v", err))
+            bot.Send(msg)
+            continue
+        }
 
-    if res["success"] == true {
-        if data, ok := res["data"].(map[string]interface{}); ok {
-            if count, ok := data["deleted_count"].(float64); ok {
-                if int(count) > 0 {
-                    // Kirim laporan ke Admin jika ada yang terhapus
-                    msg := tgbotapi.NewMessage(adminID, fmt.Sprintf("🧹 *AUTO CLEANUP*\n\n%d akun expired telah dihapus otomatis oleh sistem.", int(count)))
+        if res["success"] == true {
+            if data, ok := res["data"].(map[string]interface{}); ok {
+                count := int(data["deleted_count"].(float64))
+                if count > 0 {
+                    deletedUsers := data["deleted_users"].([]interface{})
+                    var userList string
+                    for _, u := range deletedUsers {
+                        userList += fmt.Sprintf("\n• `%s`", u.(string))
+                    }
+                    msgText := fmt.Sprintf("⏰ *AUTO CLEANUP REPORT*\n\n✅ Berhasil menghapus %d akun expired:%s", count, userList)
+                    msg := tgbotapi.NewMessage(adminID, msgText)
                     msg.ParseMode = "Markdown"
                     bot.Send(msg)
                 } else {
-                    log.Println("✅ Tidak ada akun expired untuk dihapus.")
+                    log.Println("Auto Cleanup: Tidak ada akun expired.")
                 }
             }
+        } else {
+            errMsg := "Gagal memproses cleanup."
+            if m, ok := res["message"].(string); ok {
+                errMsg = m
+            }
+            log.Printf("Auto Cleanup Failed: %s", errMsg)
         }
     }
 }
@@ -984,11 +1004,11 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
             "│ 🏙️ City   : %s\n"+
             "│ 📡 ISP    : %s\n"+
             "│ 👥 Total Akun: %d\n"+
-            "│ 💰 Donasi : Rp %s / %s\n"+
+            "│ 💰 Jumlah Donasi : Rp %s Target 90.000\n"+
             "│ ⏳ VPS Exp: %s\n"+
             "└━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
             "👇 Pilih menu di bawah ini",
-        domain, ipInfo.City, ipInfo.Isp, totalAcc, donationAmount, formatRupiah(DonationTarget), vpsExp,
+        domain, ipInfo.City, ipInfo.Isp, totalAcc, donationAmount, vpsExp,
     )
 
     deleteLastMessage(bot, chatID)
@@ -1085,7 +1105,7 @@ func sendAccountInfo(bot *tgbotapi.BotAPI, chatID int64, data map[string]interfa
     }
 
     msg := fmt.Sprintf(
-            "╭━━━「 ✅ ACCOUNT DETAILS 」━━━╮\n"+
+        "╭━━━「 ✅ ACCOUNT DETAILS 」━━━╮\n"+
             "┃\n"+
             "┃ 🔑 Pass : `%s`\n"+
             "┃ 🌐 Domain  : `%s`\n"+
