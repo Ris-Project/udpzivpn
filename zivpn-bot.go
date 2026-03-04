@@ -1043,17 +1043,19 @@ func sendAccountInfo(bot *tgbotapi.BotAPI, chatID int64, data map[string]interfa
     }
 
     msg := fmt.Sprintf(
-    "╭──「 ✅ ACCOUNT DETAILS 」\n"+
-        "│\n"+
-        "│ 🔑 Password : `%s`\n"+
-        "│ 🌐 Domain   : `%s`\n"+
-        "│ 📅 Expired  : %s\n"+
-        "│\n"+
-        "│ ─── Info Server ───\n"+
-        "│ 🏙️ City     : %s\n"+
-        "│ 📡 ISP      : %s\n"+
-        "│\n"+
-        "╰── ⚡ Selamat Menggunakan!",
+        "╭━━━「 ✅ ACCOUNT DETAILS 」━━━╮\n"+
+        "┃\n"+
+        "┃ 🔑 Pass : `%s`\n"+
+        "┃ 🌐 Domain  : `%s`\n"+
+        "┃ 📅 Expired  : `%s`\n"+
+        "┃ 📱 Max Device : 2 Device\n"+
+        "┃ 📦 limit Kuota  : Unlimited\n"+
+        "┃\n"+
+        "┣━━━「 🌍 INFO SERVER 」━━━┫\n"+
+        "┃ 🏙️ City : `%s`\n"+
+        "┃ 📡 ISP : `%s`\n"+
+        "┃\n"+
+        "╰━━「 ⚡ Selamat Menggunakan 」━━╯",
     data["password"],
     domain,
     data["expired"],
