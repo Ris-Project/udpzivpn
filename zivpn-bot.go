@@ -55,7 +55,7 @@ type BotConfig struct {
     AdminID       int64  `json:"admin_id"`
     Mode          string `json:"mode"`
     Domain        string `json:"domain"`
-    GroupUsername string `json:"group_username"` // Ditambahkan: Username Grup/Channel (contoh: @mygroup)
+    GroupUsername string `json:"@grupudp"` // Ditambahkan: Username Grup/Channel (contoh: @mygroup)
 }
 
 type IpInfo struct {
