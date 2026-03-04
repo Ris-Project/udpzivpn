@@ -47,14 +47,15 @@ var DonationImageURL = "https://d.uguu.se/COLHUNWQ.png"
 var ApiUrl = "http://127.0.0.1:" + PortFile + "/api"
 var ApiKey = "AutoFtBot-agskjgdvsbdreiWG1234512SDKrqw"
 
-// Target Donasi (Rp 80.000)
+// Target Donasi (Rp 90.000)
 const DonationTarget = 90000
 
 type BotConfig struct {
-    BotToken string `json:"bot_token"`
-    AdminID  int64  `json:"admin_id"`
-    Mode     string `json:"mode"`
-    Domain   string `json:"domain"`
+    BotToken      string `json:"bot_token"`
+    AdminID       int64  `json:"admin_id"`
+    Mode          string `json:"mode"`
+    Domain        string `json:"domain"`
+    GroupUsername string `json:"group_username"` // Ditambahkan: Username Grup/Channel (contoh: @mygroup)
 }
 
 type IpInfo struct {
@@ -140,6 +141,14 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, config *BotConfi
         return
     }
 
+    // Cek Wajib Join Grup (Khusus Public & Bukan Admin)
+    if msg.From.ID != config.AdminID && config.GroupUsername != "" {
+        if !isUserMember(bot, msg.From.ID, config.GroupUsername) {
+            sendMustJoinMsg(bot, msg.Chat.ID, config.GroupUsername)
+            return
+        }
+    }
+
     if msg.Document != nil && msg.From.ID == config.AdminID {
         if state, exists := userStates[msg.From.ID]; exists && state == "waiting_restore_file" {
             processRestoreFile(bot, msg, config)
@@ -172,6 +181,24 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
 
     chatID := query.Message.Chat.ID
     userID := query.From.ID
+
+    // Cek Wajib Join Grup (Khusus Public & Bukan Admin)
+    if userID != config.AdminID && config.GroupUsername != "" {
+        if !isUserMember(bot, userID, config.GroupUsername) {
+            bot.Request(tgbotapi.NewCallback(query.ID, "⛔ Anda harus join grup terlebih dahulu!"))
+            // Edit pesan lama menjadi peringatan join
+            editMsg := tgbotapi.NewEditMessageText(chatID, query.Message.MessageID, "⛔ Anda harus bergabung ke grup/channel untuk menggunakan bot ini.")
+            editMsg.ReplyMarkup = &tgbotapi.InlineKeyboardMarkup{
+                InlineKeyboard: [][]tgbotapi.InlineKeyboardButton{
+                    tgbotapi.NewInlineKeyboardRow(
+                        tgbotapi.NewInlineKeyboardButtonURL("📢 Join Grup", "https://t.me/"+strings.TrimPrefix(config.GroupUsername, "@")),
+                    ),
+                },
+            }
+            bot.Request(editMsg)
+            return
+        }
+    }
 
     switch {
     case query.Data == "menu_create":
@@ -867,6 +894,36 @@ func processRestoreFile(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, config *Bot
 // UI & Helpers
 // ==========================================
 
+// Fungsi baru: Cek keanggotaan user di grup/channel
+func isUserMember(bot *tgbotapi.BotAPI, userID int64, group string) bool {
+    member, err := bot.GetChatMember(tgbotapi.GetChatMemberConfig{
+        ChatConfigWithUser: tgbotapi.ChatConfigWithUser{
+            SuperGroupUsername: group,
+            UserID:             userID,
+        },
+    })
+    if err != nil {
+        log.Printf("Error checking membership: %v", err)
+        return false
+    }
+
+    // Status member, administrator, atau creator dianggap valid
+    return member.Status == "member" || member.Status == "administrator" || member.Status == "creator"
+}
+
+// Fungsi baru: Kirim pesan wajib join
+func sendMustJoinMsg(bot *tgbotapi.BotAPI, chatID int64, group string) {
+    groupLink := "https://t.me/" + strings.TrimPrefix(group, "@")
+    msg := tgbotapi.NewMessage(chatID, "⛔ **Akses Ditolak**\n\nAnda harus bergabung dengan Grup kami untuk menggunakan bot ini.")
+    msg.ParseMode = "Markdown"
+    msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+        tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonURL("📢 Join Grup", groupLink),
+        ),
+    )
+    bot.Send(msg)
+}
+
 func getTotalAccounts() int {
     users, err := getUsers()
     if err != nil {
@@ -926,7 +983,7 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
 
     totalAcc := getTotalAccounts()
     vpsExp := getVpsExpiryInfo()
-    
+
     // Load Donasi
     donationData := loadDonationData()
     donationAmount := formatRupiah(donationData.Collected)
@@ -941,7 +998,7 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
             "│ 🏙️ City   : %s\n"+
             "│ 📡 ISP    : %s\n"+
             "│ 👥 Total Akun: %d\n"+
-            "│ 💰 jumlah Donasi : Rp %s Target 90.000\n"+ // Baris baru ditambahkan di sini
+            "│ 💰 jumlah Donasi : Rp %s Target 90.000\n"+
             "│ ⏳ VPS Exp: %s\n"+
             "└━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
             "👇 Pilih menu di bawah ini",
@@ -1010,29 +1067,28 @@ func getMainMenuKeyboard(config *BotConfig, chatID int64) tgbotapi.InlineKeyboar
     }
 
     // Menu Public
-    // Menu Public
-rows := [][]tgbotapi.InlineKeyboardButton{
-    tgbotapi.NewInlineKeyboardRow(
-        tgbotapi.NewInlineKeyboardButtonData("👤 Create Password", "menu_create"),
-    ),
-}
+    rows := [][]tgbotapi.InlineKeyboardButton{
+        tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonData("👤 Create Password", "menu_create"),
+        ),
+    }
 
-// Tambah Tutorial
-rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-    tgbotapi.NewInlineKeyboardButtonURL("📺 Tutorial di youtube", "https://youtu.be/rxBWuHoPt1I?si=HzlfVnoXMfyq_8lr"),
-))
+    // Tambah Tutorial
+    rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonURL("📺 Tutorial di youtube", "https://youtu.be/rxBWuHoPt1I?si=HzlfVnoXMfyq_8lr"),
+    ))
 
-// Tambah Download MiniZIVPN
-rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-    tgbotapi.NewInlineKeyboardButtonURL("📥 Download MiniZIVPN", "https://sfile.co/wI2ojlwjJLR"),
-))
+    // Tambah Download MiniZIVPN
+    rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonURL("📥 Download MiniZIVPN", "https://sfile.co/wI2ojlwjJLR"),
+    ))
 
-// Donasi
-rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-    tgbotapi.NewInlineKeyboardButtonData("☕ Donasi / Support", "menu_donasi"),
-))
+    // Donasi
+    rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonData("☕ Donasi / Support", "menu_donasi"),
+    ))
 
-return tgbotapi.NewInlineKeyboardMarkup(rows...)
+    return tgbotapi.NewInlineKeyboardMarkup(rows...)
 }
 
 func sendAccountInfo(bot *tgbotapi.BotAPI, chatID int64, data map[string]interface{}, config *BotConfig) {
@@ -1043,23 +1099,23 @@ func sendAccountInfo(bot *tgbotapi.BotAPI, chatID int64, data map[string]interfa
     }
 
     msg := fmt.Sprintf(
-    "╭──「 ✅ ACCOUNT DETAILS 」\n"+
-        "│\n"+
-        "│ 🔑 Password : `%s`\n"+
-        "│ 🌐 Domain   : `%s`\n"+
-        "│ 📅 Expired  : %s\n"+
-        "│\n"+
-        "│ ─── Info Server ───\n"+
-        "│ 🏙️ City     : %s\n"+
-        "│ 📡 ISP      : %s\n"+
-        "│\n"+
-        "╰── ⚡ Selamat Menggunakan!",
-    data["password"],
-    domain,
-    data["expired"],
-    ipInfo.City,
-    ipInfo.Isp,
-)
+        "╭──「 ✅ ACCOUNT DETAILS 」\n"+
+            "│\n"+
+            "│ 🔑 Password : `%s`\n"+
+            "│ 🌐 Domain   : `%s`\n"+
+            "│ 📅 Expired  : %s\n"+
+            "│\n"+
+            "│ ─── Info Server ───\n"+
+            "│ 🏙️ City     : %s\n"+
+            "│ 📡 ISP      : %s\n"+
+            "│\n"+
+            "╰── ⚡ Selamat Menggunakan!",
+        data["password"],
+        domain,
+        data["expired"],
+        ipInfo.City,
+        ipInfo.Isp,
+    )
 
     reply := tgbotapi.NewMessage(chatID, msg)
     reply.ParseMode = "Markdown"
