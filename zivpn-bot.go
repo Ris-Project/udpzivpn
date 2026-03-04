@@ -39,15 +39,6 @@ const (
 )
 
 // =====================================================
-// PENGATURAN WAJIB JOIN GRUP
-// =====================================================
-// ID Grup/Channel Target
-const RequiredGroupID int64 = -1003589324912
-
-// Link Undangan Grup/Channel (GANTI DENGAN LINK ANDA)
-var RequiredGroupLink = "https://t.me/grupudp"
-
-// =====================================================
 // PENGATURAN GAMBAR (LOGO & DONASI)
 // =====================================================
 var BannerImageURL = "https://d.uguu.se/FwuepgvZ.jpg"
@@ -56,7 +47,7 @@ var DonationImageURL = "https://d.uguu.se/COLHUNWQ.png"
 var ApiUrl = "http://127.0.0.1:" + PortFile + "/api"
 var ApiKey = "AutoFtBot-agskjgdvsbdreiWG1234512SDKrqw"
 
-// Target Donasi (Rp 90.000)
+// Target Donasi (Rp 80.000)
 const DonationTarget = 90000
 
 type BotConfig struct {
@@ -140,57 +131,13 @@ func main() {
 }
 
 // ==========================================
-// Helper: Check Membership
-// ==========================================
-
-func checkMembership(bot *tgbotapi.BotAPI, userID int64) bool {
-    chatConfig := tgbotapi.GetChatMemberConfig{
-        ChatConfigWithUser: tgbotapi.ChatConfigWithUser{
-            ChatID: RequiredGroupID,
-            UserID: userID,
-        },
-    }
-
-    member, err := bot.GetChatMember(chatConfig)
-    if err != nil {
-        log.Printf("Gagal mendapatkan status member untuk user %d: %v", userID, err)
-        return false
-    }
-
-    return member.Status == "creator" || member.Status == "administrator" || member.Status == "member"
-}
-
-func sendMustJoinMessage(bot *tgbotapi.BotAPI, chatID int64) {
-    msg := tgbotapi.NewMessage(chatID, "⛔ **AKSES DITOLAK**\n\nAnda harus bergabung ke grup/channel kami terlebih dahulu untuk menggunakan bot ini.")
-    msg.ParseMode = "Markdown"
-    msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
-        tgbotapi.NewInlineKeyboardRow(
-            tgbotapi.NewInlineKeyboardButtonURL("📢 Join Grup Sekarang", RequiredGroupLink),
-        ),
-    )
-    bot.Send(msg)
-}
-
-// ==========================================
 // Telegram Event Handlers
 // ==========================================
 
 func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, config *BotConfig) {
-    userID := msg.From.ID
-    chatID := msg.Chat.ID
-
-    if userID != config.AdminID {
-        if config.Mode == "private" {
-            replyError(bot, chatID, "⛔ Akses Ditolak. Bot ini bersifat Private.")
-            return
-        }
-
-        if config.Mode == "public" {
-            if !checkMembership(bot, userID) {
-                sendMustJoinMessage(bot, chatID)
-                return
-            }
-        }
+    if !isAllowed(config, msg.From.ID) {
+        replyError(bot, msg.Chat.ID, "⛔ Akses Ditolak. Bot ini bersifat Private.")
+        return
     }
 
     if msg.Document != nil && msg.From.ID == config.AdminID {
@@ -216,27 +163,15 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, config *BotConfi
 }
 
 func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config *BotConfig) {
-    userID := query.From.ID
-    chatID := query.Message.Chat.ID
-
-    if userID != config.AdminID {
-        if config.Mode == "private" {
+    if !isAllowed(config, query.From.ID) {
+        if query.Data != "toggle_mode" || query.From.ID != config.AdminID {
             bot.Request(tgbotapi.NewCallback(query.ID, "Akses Ditolak"))
             return
         }
-
-        if config.Mode == "public" {
-            if !checkMembership(bot, userID) {
-                bot.Request(tgbotapi.NewCallbackWithAlert(query.ID, "⛔ Anda wajib join grup terlebih dahulu!"))
-                sendMustJoinMessage(bot, chatID)
-                return
-            }
-        }
     }
 
-    if query.Data == "toggle_mode" && userID != config.AdminID {
-        return
-    }
+    chatID := query.Message.Chat.ID
+    userID := query.From.ID
 
     switch {
     case query.Data == "menu_create":
@@ -377,14 +312,7 @@ func handleState(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, state string, conf
                 savePublicUsage(userID)
             }
             data := res["data"].(map[string]interface{})
-            
-            // Kirim info akun ke user
             sendAccountInfo(bot, chatID, data, config)
-
-            // NOTIFIKASI KE GRUP DENGAN DATA TERSENSOR
-            if userID != config.AdminID {
-                sendAdminCreationNotif(bot, RequiredGroupID, msg.From, data, daysInt)
-            }
         } else {
             replyError(bot, chatID, fmt.Sprintf("Gagal: %s", res["message"]))
             showMainMenu(bot, chatID, config)
@@ -836,7 +764,7 @@ func performBackup(bot *tgbotapi.BotAPI, chatID int64) {
 }
 
 // ==========================================
-// FITUR: Auto Backup Scheduler
+// FITUR BARU: Auto Backup Scheduler
 // ==========================================
 func startAutoBackupScheduler(bot *tgbotapi.BotAPI, adminID int64) {
     ticker := time.NewTicker(4 * time.Hour)
@@ -936,45 +864,6 @@ func processRestoreFile(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, config *Bot
 }
 
 // ==========================================
-// FITUR BARU: Notifikasi ke Grup (Dengan Sensor)
-// ==========================================
-
-// Helper untuk menyensor string (menampilkan 3 karakter pertama saja)
-func sensorPassword(s string) string {
-    if len(s) <= 3 {
-        return "***"
-    }
-    return s[:3] + strings.Repeat("*", len(s)-3)
-}
-
-func sendAdminCreationNotif(bot *tgbotapi.BotAPI, targetChatID int64, user *tgbotapi.User, data map[string]interface{}, days int) {
-    userName := user.FirstName
-    if user.LastName != "" {
-        userName += " " + user.LastName
-    }
-    // Membuat link user tanpa menampilkan ID mentah
-    userLink := fmt.Sprintf("<a href=\"tg://user?id=%d\">%s</a>", user.ID, userName)
-
-    // Sensor password sebelum dikirim
-    passRaw := fmt.Sprintf("%v", data["password"])
-    censoredPass := sensorPassword(passRaw)
-
-    msgText := fmt.Sprintf(
-        "📢 <b>NOTIFIKASI PEMBUATAN AKUN</b>\n\n"+
-            "👤 <b>User:</b> %s\n"+
-            "➕ <b>Status:</b> Telah membuat akun baru\n\n"+
-            "🔑 <b>Password:</b> <code>%s</code>\n"+
-            "⏳ <b>Durasi:</b> %d Hari\n"+
-            "📅 <b>Expired:</b> %s",
-        userLink, censoredPass, days, data["expired"],
-    )
-
-    msg := tgbotapi.NewMessage(targetChatID, msgText)
-    msg.ParseMode = "HTML"
-    bot.Send(msg)
-}
-
-// ==========================================
 // UI & Helpers
 // ==========================================
 
@@ -1013,6 +902,7 @@ func getVpsExpiryInfo() string {
     return fmt.Sprintf("%d Hari %d Jam %d Menit", days, hours, minutes)
 }
 
+// Fungsi Helper untuk Format Rupiah (Titik pemisah ribuan)
 func formatRupiah(n int) string {
     s := strconv.Itoa(n)
     result := ""
@@ -1036,7 +926,8 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
 
     totalAcc := getTotalAccounts()
     vpsExp := getVpsExpiryInfo()
-
+    
+    // Load Donasi
     donationData := loadDonationData()
     donationAmount := formatRupiah(donationData.Collected)
 
@@ -1050,7 +941,7 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
             "│ 🏙️ City   : %s\n"+
             "│ 📡 ISP    : %s\n"+
             "│ 👥 Total Akun: %d\n"+
-            "│ 💰 jumlah Donasi : Rp %s Target 90.000\n"+
+            "│ 💰 jumlah Donasi : Rp %s Target 90.000\n"+ // Baris baru ditambahkan di sini
             "│ ⏳ VPS Exp: %s\n"+
             "└━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
             "👇 Pilih menu di bawah ini",
@@ -1118,25 +1009,30 @@ func getMainMenuKeyboard(config *BotConfig, chatID int64) tgbotapi.InlineKeyboar
         return tgbotapi.NewInlineKeyboardMarkup(rows...)
     }
 
-    rows := [][]tgbotapi.InlineKeyboardButton{
-        tgbotapi.NewInlineKeyboardRow(
-            tgbotapi.NewInlineKeyboardButtonData("👤 Create Password", "menu_create"),
-        ),
-    }
+    // Menu Public
+    // Menu Public
+rows := [][]tgbotapi.InlineKeyboardButton{
+    tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonData("👤 Create Password", "menu_create"),
+    ),
+}
 
-    rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-        tgbotapi.NewInlineKeyboardButtonURL("📺 Tutorial di youtube", "https://youtu.be/rxBWuHoPt1I?si=HzlfVnoXMfyq_8lr"),
-    ))
+// Tambah Tutorial
+rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+    tgbotapi.NewInlineKeyboardButtonURL("📺 Tutorial di youtube", "https://youtu.be/rxBWuHoPt1I?si=HzlfVnoXMfyq_8lr"),
+))
 
-    rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-        tgbotapi.NewInlineKeyboardButtonURL("📥 Download MiniZIVPN", "https://sfile.co/wI2ojlwjJLR"),
-    ))
+// Tambah Download MiniZIVPN
+rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+    tgbotapi.NewInlineKeyboardButtonURL("📥 Download MiniZIVPN", "https://sfile.co/wI2ojlwjJLR"),
+))
 
-    rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-        tgbotapi.NewInlineKeyboardButtonData("☕ Donasi / Support", "menu_donasi"),
-    ))
+// Donasi
+rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+    tgbotapi.NewInlineKeyboardButtonData("☕ Donasi / Support", "menu_donasi"),
+))
 
-    return tgbotapi.NewInlineKeyboardMarkup(rows...)
+return tgbotapi.NewInlineKeyboardMarkup(rows...)
 }
 
 func sendAccountInfo(bot *tgbotapi.BotAPI, chatID int64, data map[string]interface{}, config *BotConfig) {
@@ -1147,23 +1043,23 @@ func sendAccountInfo(bot *tgbotapi.BotAPI, chatID int64, data map[string]interfa
     }
 
     msg := fmt.Sprintf(
-        "╭──「 ✅ ACCOUNT DETAILS 」\n"+
-            "│\n"+
-            "│ 🔑 Password : `%s`\n"+
-            "│ 🌐 Domain   : `%s`\n"+
-            "│ 📅 Expired  : %s\n"+
-            "│\n"+
-            "│ ─── Info Server ───\n"+
-            "│ 🏙️ City     : %s\n"+
-            "│ 📡 ISP      : %s\n"+
-            "│\n"+
-            "╰── ⚡ Selamat Menggunakan!",
-        data["password"],
-        domain,
-        data["expired"],
-        ipInfo.City,
-        ipInfo.Isp,
-    )
+    "╭──「 ✅ ACCOUNT DETAILS 」\n"+
+        "│\n"+
+        "│ 🔑 Password : `%s`\n"+
+        "│ 🌐 Domain   : `%s`\n"+
+        "│ 📅 Expired  : %s\n"+
+        "│\n"+
+        "│ ─── Info Server ───\n"+
+        "│ 🏙️ City     : %s\n"+
+        "│ 📡 ISP      : %s\n"+
+        "│\n"+
+        "╰── ⚡ Selamat Menggunakan!",
+    data["password"],
+    domain,
+    data["expired"],
+    ipInfo.City,
+    ipInfo.Isp,
+)
 
     reply := tgbotapi.NewMessage(chatID, msg)
     reply.ParseMode = "Markdown"
@@ -1296,6 +1192,10 @@ func validateNumber(bot *tgbotapi.BotAPI, chatID int64, text string, min, max in
 // ==========================================
 // Configuration & Utils
 // ==========================================
+
+func isAllowed(config *BotConfig, userID int64) bool {
+    return config.Mode == "public" || userID == config.AdminID
+}
 
 func saveConfig(config *BotConfig) error {
     data, err := json.MarshalIndent(config, "", "  ")
