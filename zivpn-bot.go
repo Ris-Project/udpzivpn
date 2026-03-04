@@ -36,6 +36,9 @@ const (
     PublicCooldownDays = 6
     VpsExpiredFile     = "/etc/zivpn/vps_expired"
     DonationDataFile   = "/etc/zivpn/donation_data.json"
+    
+    // Grup wajib join saat mode public
+    RequiredGroup      = "@grupudp" 
 )
 
 // =====================================================
@@ -51,11 +54,10 @@ var ApiKey = "AutoFtBot-agskjgdvsbdreiWG1234512SDKrqw"
 const DonationTarget = 90000
 
 type BotConfig struct {
-    BotToken      string `json:"bot_token"`
-    AdminID       int64  `json:"admin_id"`
-    Mode          string `json:"mode"`
-    Domain        string `json:"domain"`
-    GroupUsername string `json:"@grupudp"` // Ditambahkan: Username Grup/Channel (contoh: @mygroup)
+    BotToken string `json:"bot_token"`
+    AdminID  int64  `json:"admin_id"`
+    Mode     string `json:"mode"`
+    Domain   string `json:"domain"`
 }
 
 type IpInfo struct {
@@ -141,10 +143,10 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, config *BotConfi
         return
     }
 
-    // Cek Wajib Join Grup (Khusus Public & Bukan Admin)
-    if msg.From.ID != config.AdminID && config.GroupUsername != "" {
-        if !isUserMember(bot, msg.From.ID, config.GroupUsername) {
-            sendMustJoinMsg(bot, msg.Chat.ID, config.GroupUsername)
+    // CEK KEANGGOTAAN GRUP UNTUK MODE PUBLIC
+    if config.Mode == "public" && msg.From.ID != config.AdminID {
+        if !isUserJoined(bot, msg.From.ID) {
+            sendMustJoinMessage(bot, msg.Chat.ID)
             return
         }
     }
@@ -182,20 +184,11 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
     chatID := query.Message.Chat.ID
     userID := query.From.ID
 
-    // Cek Wajib Join Grup (Khusus Public & Bukan Admin)
-    if userID != config.AdminID && config.GroupUsername != "" {
-        if !isUserMember(bot, userID, config.GroupUsername) {
-            bot.Request(tgbotapi.NewCallback(query.ID, "⛔ Anda harus join grup terlebih dahulu!"))
-            // Edit pesan lama menjadi peringatan join
-            editMsg := tgbotapi.NewEditMessageText(chatID, query.Message.MessageID, "⛔ Anda harus bergabung ke grup/channel untuk menggunakan bot ini.")
-            editMsg.ReplyMarkup = &tgbotapi.InlineKeyboardMarkup{
-                InlineKeyboard: [][]tgbotapi.InlineKeyboardButton{
-                    tgbotapi.NewInlineKeyboardRow(
-                        tgbotapi.NewInlineKeyboardButtonURL("📢 Join Grup", "https://t.me/"+strings.TrimPrefix(config.GroupUsername, "@")),
-                    ),
-                },
-            }
-            bot.Request(editMsg)
+    // CEK KEANGGOTAAN GRUP UNTUK MODE PUBLIC
+    if config.Mode == "public" && userID != config.AdminID {
+        if !isUserJoined(bot, userID) {
+            bot.Request(tgbotapi.NewCallback(query.ID, "⛔ Anda harus join grup @grupudp terlebih dahulu!"))
+            sendMustJoinMessage(bot, chatID)
             return
         }
     }
@@ -265,6 +258,41 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
     }
 
     bot.Request(tgbotapi.NewCallback(query.ID, ""))
+}
+
+// ==========================================
+// Membership Check Helper
+// ==========================================
+
+// isUserJoined memeriksa apakah user sudah join ke RequiredGroup
+func isUserJoined(bot *tgbotapi.BotAPI, userID int64) bool {
+    chatConfig := tgbotapi.GetChatMemberConfig{
+        ChatConfigWithUser: tgbotapi.ChatConfigWithUser{
+            ChannelUsername: RequiredGroup,
+            UserID:          userID,
+        },
+    }
+
+    member, err := bot.GetChatMember(chatConfig)
+    if err != nil {
+        log.Printf("Gagal cek keanggotaan user %d: %v", userID, err)
+        return false
+    }
+
+    // Status yang dianggap valid: Creator, Administrator, Member
+    return member.Status == "member" || member.Status == "administrator" || member.Status == "creator"
+}
+
+// sendMustJoinMessage mengirim pesan peringatan untuk join grup
+func sendMustJoinMessage(bot *tgbotapi.BotAPI, chatID int64) {
+    msg := tgbotapi.NewMessage(chatID, "⛔ **AKSES DITOLAK**\n\nUntuk menggunakan bot ini, Anda wajib bergabung ke channel/grup kami terlebih dahulu.")
+    msg.ParseMode = "Markdown"
+    msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+        tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonURL("📢 Join Grup @grupudp", "https://t.me/grupudp"),
+        ),
+    )
+    bot.Send(msg)
 }
 
 func handleState(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, state string, config *BotConfig) {
@@ -894,36 +922,6 @@ func processRestoreFile(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, config *Bot
 // UI & Helpers
 // ==========================================
 
-// Fungsi baru: Cek keanggotaan user di grup/channel
-func isUserMember(bot *tgbotapi.BotAPI, userID int64, group string) bool {
-    member, err := bot.GetChatMember(tgbotapi.GetChatMemberConfig{
-        ChatConfigWithUser: tgbotapi.ChatConfigWithUser{
-            SuperGroupUsername: group,
-            UserID:             userID,
-        },
-    })
-    if err != nil {
-        log.Printf("Error checking membership: %v", err)
-        return false
-    }
-
-    // Status member, administrator, atau creator dianggap valid
-    return member.Status == "member" || member.Status == "administrator" || member.Status == "creator"
-}
-
-// Fungsi baru: Kirim pesan wajib join
-func sendMustJoinMsg(bot *tgbotapi.BotAPI, chatID int64, group string) {
-    groupLink := "https://t.me/" + strings.TrimPrefix(group, "@")
-    msg := tgbotapi.NewMessage(chatID, "⛔ **Akses Ditolak**\n\nAnda harus bergabung dengan Grup kami untuk menggunakan bot ini.")
-    msg.ParseMode = "Markdown"
-    msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
-        tgbotapi.NewInlineKeyboardRow(
-            tgbotapi.NewInlineKeyboardButtonURL("📢 Join Grup", groupLink),
-        ),
-    )
-    bot.Send(msg)
-}
-
 func getTotalAccounts() int {
     users, err := getUsers()
     if err != nil {
@@ -983,7 +981,7 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
 
     totalAcc := getTotalAccounts()
     vpsExp := getVpsExpiryInfo()
-
+    
     // Load Donasi
     donationData := loadDonationData()
     donationAmount := formatRupiah(donationData.Collected)
@@ -998,7 +996,7 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
             "│ 🏙️ City   : %s\n"+
             "│ 📡 ISP    : %s\n"+
             "│ 👥 Total Akun: %d\n"+
-            "│ 💰 jumlah Donasi : Rp %s Target 90.000\n"+
+            "│ 💰 Jumlah Donasi : Rp %s Target 90.000\n"+
             "│ ⏳ VPS Exp: %s\n"+
             "└━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
             "👇 Pilih menu di bawah ini",
