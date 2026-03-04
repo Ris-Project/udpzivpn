@@ -47,7 +47,7 @@ var DonationImageURL = "https://d.uguu.se/COLHUNWQ.png"
 var ApiUrl = "http://127.0.0.1:" + PortFile + "/api"
 var ApiKey = "AutoFtBot-agskjgdvsbdreiWG1234512SDKrqw"
 
-// Target Donasi (Rp 80.000)
+// Target Donasi (Rp 90.000)
 const DonationTarget = 90000
 
 type BotConfig struct {
@@ -115,7 +115,11 @@ func main() {
     bot.Debug = false
     log.Printf("Authorized on account %s", bot.Self.UserName)
 
+    // =====================================================
+    // JADWAL OTOMATIS (BACKUP & CLEANUP)
+    // =====================================================
     go startAutoBackupScheduler(bot, config.AdminID)
+    go startAutoCleanupScheduler(bot, config.AdminID) // FITUR BARU: Hapus expired otomatis
 
     u := tgbotapi.NewUpdate(0)
     u.Timeout = 60
@@ -764,7 +768,7 @@ func performBackup(bot *tgbotapi.BotAPI, chatID int64) {
 }
 
 // ==========================================
-// FITUR BARU: Auto Backup Scheduler
+// FITUR: Auto Backup Scheduler
 // ==========================================
 func startAutoBackupScheduler(bot *tgbotapi.BotAPI, adminID int64) {
     ticker := time.NewTicker(4 * time.Hour)
@@ -775,6 +779,45 @@ func startAutoBackupScheduler(bot *tgbotapi.BotAPI, adminID int64) {
     for range ticker.C {
         log.Println("🔄 Menjalankan auto backup terjadwal...")
         performBackup(bot, adminID)
+    }
+}
+
+// ==========================================
+// FITUR BARU: Auto Cleanup Scheduler (Otomatis)
+// ==========================================
+func startAutoCleanupScheduler(bot *tgbotapi.BotAPI, adminID int64) {
+    // Cek setiap 6 Jam. Ubah ke 24*time.Hour jika ingin sekali sehari.
+    ticker := time.NewTicker(6 * time.Hour)
+    defer ticker.Stop()
+
+    log.Printf("🗑️ Auto Cleanup Scheduler aktif (Cek setiap 6 jam).")
+
+    for range ticker.C {
+        log.Println("🔄 Menjalankan pembersihan akun expired otomatis...")
+        checkAndCleanup(bot, adminID)
+    }
+}
+
+func checkAndCleanup(bot *tgbotapi.BotAPI, adminID int64) {
+    res, err := apiCall("POST", "/cron/cleanup", nil)
+    if err != nil {
+        log.Printf("❌ Error Auto Cleanup: %v", err)
+        return
+    }
+
+    if res["success"] == true {
+        if data, ok := res["data"].(map[string]interface{}); ok {
+            if count, ok := data["deleted_count"].(float64); ok {
+                if int(count) > 0 {
+                    // Kirim laporan ke Admin jika ada yang terhapus
+                    msg := tgbotapi.NewMessage(adminID, fmt.Sprintf("🧹 *AUTO CLEANUP*\n\n%d akun expired telah dihapus otomatis oleh sistem.", int(count)))
+                    msg.ParseMode = "Markdown"
+                    bot.Send(msg)
+                } else {
+                    log.Println("✅ Tidak ada akun expired untuk dihapus.")
+                }
+            }
+        }
     }
 }
 
@@ -926,7 +969,7 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
 
     totalAcc := getTotalAccounts()
     vpsExp := getVpsExpiryInfo()
-    
+
     // Load Donasi
     donationData := loadDonationData()
     donationAmount := formatRupiah(donationData.Collected)
@@ -941,11 +984,11 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
             "│ 🏙️ City   : %s\n"+
             "│ 📡 ISP    : %s\n"+
             "│ 👥 Total Akun: %d\n"+
-            "│ 💰 jumlah Donasi : Rp %s Target 90.000\n"+ // Baris baru ditambahkan di sini
+            "│ 💰 Donasi : Rp %s / %s\n"+
             "│ ⏳ VPS Exp: %s\n"+
             "└━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
             "👇 Pilih menu di bawah ini",
-        domain, ipInfo.City, ipInfo.Isp, totalAcc, donationAmount, vpsExp,
+        domain, ipInfo.City, ipInfo.Isp, totalAcc, donationAmount, formatRupiah(DonationTarget), vpsExp,
     )
 
     deleteLastMessage(bot, chatID)
@@ -1010,29 +1053,28 @@ func getMainMenuKeyboard(config *BotConfig, chatID int64) tgbotapi.InlineKeyboar
     }
 
     // Menu Public
-    // Menu Public
-rows := [][]tgbotapi.InlineKeyboardButton{
-    tgbotapi.NewInlineKeyboardRow(
-        tgbotapi.NewInlineKeyboardButtonData("👤 Create Password", "menu_create"),
-    ),
-}
+    rows := [][]tgbotapi.InlineKeyboardButton{
+        tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonData("👤 Create Password", "menu_create"),
+        ),
+    }
 
-// Tambah Tutorial
-rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-    tgbotapi.NewInlineKeyboardButtonURL("📺 Tutorial di youtube", "https://youtu.be/rxBWuHoPt1I?si=HzlfVnoXMfyq_8lr"),
-))
+    // Tambah Tutorial
+    rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonURL("📺 Tutorial di youtube", "https://youtu.be/rxBWuHoPt1I?si=HzlfVnoXMfyq_8lr"),
+    ))
 
-// Tambah Download MiniZIVPN
-rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-    tgbotapi.NewInlineKeyboardButtonURL("📥 Download MiniZIVPN", "https://sfile.co/wI2ojlwjJLR"),
-))
+    // Tambah Download MiniZIVPN
+    rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonURL("📥 Download MiniZIVPN", "https://sfile.co/wI2ojlwjJLR"),
+    ))
 
-// Donasi
-rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-    tgbotapi.NewInlineKeyboardButtonData("☕ Donasi / Support", "menu_donasi"),
-))
+    // Donasi
+    rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonData("☕ Donasi / Support", "menu_donasi"),
+    ))
 
-return tgbotapi.NewInlineKeyboardMarkup(rows...)
+    return tgbotapi.NewInlineKeyboardMarkup(rows...)
 }
 
 func sendAccountInfo(bot *tgbotapi.BotAPI, chatID int64, data map[string]interface{}, config *BotConfig) {
@@ -1043,25 +1085,25 @@ func sendAccountInfo(bot *tgbotapi.BotAPI, chatID int64, data map[string]interfa
     }
 
     msg := fmt.Sprintf(
-        "╭━━━「 ✅ ACCOUNT DETAILS 」━━━╮\n"+
-        "┃\n"+
-        "┃ 🔑 Pass : `%s`\n"+
-        "┃ 🌐 Domain  : `%s`\n"+
-        "┃ 📅 Expired  : `%s`\n"+
-        "┃ 📱 Max Device : 2 Device\n"+
-        "┃ 📦 limit Kuota  : Unlimited\n"+
-        "┃\n"+
-        "┣━━━「 🌍 INFO SERVER 」━━━┫\n"+
-        "┃ 🏙️ City : `%s`\n"+
-        "┃ 📡 ISP : `%s`\n"+
-        "┃\n"+
-        "╰━━「 ⚡ Selamat Menggunakan 」━━╯",
-    data["password"],
-    domain,
-    data["expired"],
-    ipInfo.City,
-    ipInfo.Isp,
-)
+            "╭━━━「 ✅ ACCOUNT DETAILS 」━━━╮\n"+
+            "┃\n"+
+            "┃ 🔑 Pass : `%s`\n"+
+            "┃ 🌐 Domain  : `%s`\n"+
+            "┃ 📅 Expired  : `%s`\n"+
+            "┃ 📱 Max Device : 2 Device\n"+
+            "┃ 📦 limit Kuota  : Unlimited\n"+
+            "┃\n"+
+            "┣━━━「 🌍 INFO SERVER 」━━━┫\n"+
+            "┃ 🏙️ City : `%s`\n"+
+            "┃ 📡 ISP : `%s`\n"+
+            "┃\n"+
+            "╰━━「 ⚡ Selamat Menggunakan 」━━╯",
+        data["password"],
+        domain,
+        data["expired"],
+        ipInfo.City,
+        ipInfo.Isp,
+    )
 
     reply := tgbotapi.NewMessage(chatID, msg)
     reply.ParseMode = "Markdown"
