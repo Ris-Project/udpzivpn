@@ -869,15 +869,16 @@ func startAutoBackupScheduler(bot *tgbotapi.BotAPI, adminID int64) {
 }
 
 // ==========================================
-// FITUR BARU: Auto Expired Account Scheduler (Setiap Jam 00:01)
+// FITUR BARU: Auto Expired Account Scheduler (Menjadi Jam 06:00 Pagi)
 // ==========================================
 func startExpiredAccountScheduler(bot *tgbotapi.BotAPI, adminID int64) {
     for {
         now := time.Now()
-        // Hitung waktu jam 00:01 hari ini
-        nextRun := time.Date(now.Year(), now.Month(), now.Day(), 0, 1, 0, 0, now.Location())
+        // Hitung waktu jam 06:00 hari ini
+        // (Year, Month, Day, Hour, Minute, Second, Nanosecond, Location)
+        nextRun := time.Date(now.Year(), now.Month(), now.Day(), 6, 0, 0, 0, now.Location())
 
-        // Jika sekarang sudah lewat jam 00:01, jadwalkan untuk besok
+        // Jika sekarang sudah lewat jam 06:00, jadwalkan untuk besok
         if now.After(nextRun) {
             nextRun = nextRun.Add(24 * time.Hour)
         }
