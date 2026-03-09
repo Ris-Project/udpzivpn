@@ -1133,31 +1133,31 @@ func getMainMenuKeyboard(config *BotConfig, chatID int64) tgbotapi.InlineKeyboar
         }
 
         rows := [][]tgbotapi.InlineKeyboardButton{
-            tgbotapi.NewInlineKeyboardRow(
-                tgbotapi.NewInlineKeyboardButtonData("👤 Create pasword", "menu_create"),
-                tgbotapi.NewInlineKeyboardButtonData("🎟️ Trial 1 Hari", "menu_trial"), // NEW TRIAL BUTTON
-            ),
-            tgbotapi.NewInlineKeyboardRow(
-                tgbotapi.NewInlineKeyboardButtonData("🗑️ Delete pasword", "menu_delete"),
-                tgbotapi.NewInlineKeyboardButtonData("🔄 Renew", "menu_renew"),
-            ),
-            tgbotapi.NewInlineKeyboardRow(
-                tgbotapi.NewInlineKeyboardButtonData("📋 List Passwords", "menu_list"),
-                tgbotapi.NewInlineKeyboardButtonData("📊 System Info", "menu_info"),
-            ),
-            tgbotapi.NewInlineKeyboardRow(
-                tgbotapi.NewInlineKeyboardButtonData("💾 Backup & Restore", "menu_backup_restore"),
-                tgbotapi.NewInlineKeyboardButtonData("🧹 Cleanup Expired", "menu_cleanup"),
-            ),
-            tgbotapi.NewInlineKeyboardRow(
-                tgbotapi.NewInlineKeyboardButtonData("⏳ Set VPS Exp", "menu_set_vps_exp"),
-                tgbotapi.NewInlineKeyboardButtonData("💰 Set Donasi", "menu_set_donasi"),
-            ),
-            tgbotapi.NewInlineKeyboardRow(
-                tgbotapi.NewInlineKeyboardButtonData(modeLabel, "toggle_mode"),
-            ),
-        }
-        return tgbotapi.NewInlineKeyboardMarkup(rows...)
+    tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonData("👤 Create pasword", "menu_create"),
+        tgbotapi.NewInlineKeyboardButtonData("🎟️ Trial 1 Hari", "menu_trial"),
+    ),
+    tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonData("🗑️ Delete pasword", "menu_delete"),
+        tgbotapi.NewInlineKeyboardButtonData("🔄 Renew", "menu_renew"),
+    ),
+    tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonData("📋 List Passwords", "menu_list"),
+        tgbotapi.NewInlineKeyboardButtonData("📊 System Info", "menu_info"),
+    ),
+    tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonData("💾 Backup & Restore", "menu_backup_restore"),
+    ),
+    tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonData("⏳ Set VPS Exp", "menu_set_vps_exp"),
+        tgbotapi.NewInlineKeyboardButtonData("💰 Set Donasi", "menu_set_donasi"),
+    ),
+    tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonData(modeLabel, "toggle_mode"),
+    ),
+}
+
+return tgbotapi.NewInlineKeyboardMarkup(rows...)
     }
 
     // Menu Public
