@@ -8,7 +8,6 @@ import (
     "io"
     "io/ioutil"
     "log"
-    "math/rand"
     "net/http"
     "os"
     "os/exec"
@@ -94,9 +93,6 @@ var animMutex sync.Mutex
 // ==========================================
 
 func main() {
-    // Seed untuk random password trial
-    rand.Seed(time.Now().UnixNano())
-
     if keyBytes, err := ioutil.ReadFile(ApiKeyFile); err == nil {
         ApiKey = strings.TrimSpace(string(keyBytes))
     }
@@ -121,7 +117,7 @@ func main() {
 
     // Scheduler Backup setiap 4 jam
     go startAutoBackupScheduler(bot, config.AdminID)
-
+    
     // Scheduler Auto Expired setiap hari jam 00:01
     go startExpiredAccountScheduler(bot, config.AdminID)
 
@@ -184,10 +180,6 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
     switch {
     case query.Data == "menu_create":
         startCreateUser(bot, chatID, userID, config)
-    case query.Data == "menu_trial":
-        if userID == config.AdminID {
-            createTrialUser(bot, chatID, config)
-        }
     case query.Data == "menu_donasi":
         sendDonationInfo(bot, chatID)
     case query.Data == "menu_set_vps_exp":
@@ -212,7 +204,7 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
         showUserSelection(bot, chatID, 1, "renew")
     case query.Data == "menu_list":
         if userID == config.AdminID {
-            listUsers(bot, chatID, 1) // Start from page 1
+            listUsers(bot, chatID)
         }
     case query.Data == "menu_cleanup":
         if userID == config.AdminID {
@@ -238,12 +230,6 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
         cancelOperation(bot, chatID, userID, config)
     case strings.HasPrefix(query.Data, "page_"):
         handlePagination(bot, chatID, query.Data)
-    case strings.HasPrefix(query.Data, "list_page:"):
-        parts := strings.Split(query.Data, ":")
-        if len(parts) == 2 {
-            page, _ := strconv.Atoi(parts[1])
-            listUsers(bot, chatID, page)
-        }
     case strings.HasPrefix(query.Data, "select_renew:"):
         startRenewUser(bot, chatID, userID, query.Data)
     case strings.HasPrefix(query.Data, "select_delete:"):
@@ -450,43 +436,7 @@ func startCreateUser(bot *tgbotapi.BotAPI, chatID int64, userID int64, config *B
 
     userStates[userID] = "create_username"
     tempUserData[userID] = make(map[string]string)
-    sendMessage(bot, chatID, "👤 Masukkan Password:")
-}
-
-// FITUR BARU: Trial 1 Hari dengan Random Password
-func createTrialUser(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
-    // Generate random 6 digit number
-    randNum := rand.Intn(999999)
-    username := fmt.Sprintf("trial-%06d", randNum)
-    days := 1
-
-    loadingMsg := tgbotapi.NewMessage(chatID, "⏳ Membuat Akun Trial...")
-    sentMsg, _ := bot.Send(loadingMsg)
-
-    stopAnim := make(chan bool)
-    go animateLoading(bot, chatID, sentMsg.MessageID, stopAnim)
-
-    res, err := apiCall("POST", "/user/create", map[string]interface{}{
-        "password": username,
-        "days":     days,
-    })
-
-    stopAnim <- true
-    bot.Request(tgbotapi.NewDeleteMessage(chatID, sentMsg.MessageID))
-
-    if err != nil {
-        replyError(bot, chatID, "Error API: "+err.Error())
-        showMainMenu(bot, chatID, config)
-        return
-    }
-
-    if res["success"] == true {
-        data := res["data"].(map[string]interface{})
-        sendAccountInfo(bot, chatID, data, config)
-    } else {
-        replyError(bot, chatID, fmt.Sprintf("Gagal: %s", res["message"]))
-        showMainMenu(bot, chatID, config)
-    }
+    sendMessage(bot, chatID, "👤 Masukkan Password/Username:")
 }
 
 func startSetVpsExp(bot *tgbotapi.BotAPI, chatID int64, userID int64) {
@@ -641,8 +591,7 @@ func deleteUser(bot *tgbotapi.BotAPI, chatID int64, username string, config *Bot
     }
 }
 
-// MODIFIED: Added pagination support
-func listUsers(bot *tgbotapi.BotAPI, chatID int64, page int) {
+func listUsers(bot *tgbotapi.BotAPI, chatID int64) {
     res, err := apiCall("GET", "/users", nil)
     if err != nil {
         replyError(bot, chatID, "Error API: "+err.Error())
@@ -656,24 +605,8 @@ func listUsers(bot *tgbotapi.BotAPI, chatID int64, page int) {
             return
         }
 
-        // Pagination Logic
-        perPage := 100 // 100 users per page
-        totalPages := (len(users) + perPage - 1) / perPage
-        if page < 1 {
-            page = 1
-        }
-        if page > totalPages {
-            page = totalPages
-        }
-
-        start := (page - 1) * perPage
-        end := start + perPage
-        if end > len(users) {
-            end = len(users)
-        }
-
-        msg := fmt.Sprintf("📋 「 DAFTAR USER AKTIF 」\nHalaman %d/%d\n\n", page, totalPages)
-        for _, u := range users[start:end] {
+        msg := "📋 「 DAFTAR USER AKTIF 」\n\n"
+        for _, u := range users {
             user := u.(map[string]interface{})
             status := "🟢"
             if user["status"] == "Expired" {
@@ -682,27 +615,8 @@ func listUsers(bot *tgbotapi.BotAPI, chatID int64, page int) {
             msg += fmt.Sprintf("%s `%s` ⌛ %s\n", status, user["password"], user["expired"])
         }
 
-        // Navigation Buttons
-        var rows [][]tgbotapi.InlineKeyboardButton
-        var navRow []tgbotapi.InlineKeyboardButton
-
-        if page > 1 {
-            navRow = append(navRow, tgbotapi.NewInlineKeyboardButtonData("⬅️ Prev", fmt.Sprintf("list_page:%d", page-1)))
-        }
-        if page < totalPages {
-            navRow = append(navRow, tgbotapi.NewInlineKeyboardButtonData("Next ➡️", fmt.Sprintf("list_page:%d", page+1)))
-        }
-
-        if len(navRow) > 0 {
-            rows = append(rows, navRow)
-        }
-        rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-            tgbotapi.NewInlineKeyboardButtonData("🏠 Menu", "cancel"),
-        ))
-
         reply := tgbotapi.NewMessage(chatID, msg)
         reply.ParseMode = "Markdown"
-        reply.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(rows...)
         sendAndTrack(bot, reply)
     } else {
         replyError(bot, chatID, "Gagal mengambil data.")
@@ -790,8 +704,8 @@ func showBackupRestoreMenu(bot *tgbotapi.BotAPI, chatID int64) {
     msg.ParseMode = "Markdown"
     msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
         tgbotapi.NewInlineKeyboardRow(
-            tgbotapi.NewInlineKeyboardButtonData("⬇️ Backup", "menu_backup_action"),
-            tgbotapi.NewInlineKeyboardButtonData("⬆️ Restore", "menu_restore_action"),
+            tgbotapi.NewInlineKeyboardButtonData("⬇️ Backup Data", "menu_backup_action"),
+            tgbotapi.NewInlineKeyboardButtonData("⬆️ Restore Data", "menu_restore_action"),
         ),
         tgbotapi.NewInlineKeyboardRow(
             tgbotapi.NewInlineKeyboardButtonData("❌ Kembali", "cancel"),
@@ -869,16 +783,15 @@ func startAutoBackupScheduler(bot *tgbotapi.BotAPI, adminID int64) {
 }
 
 // ==========================================
-// FITUR BARU: Auto Expired Account Scheduler (Menjadi Jam 06:00 Pagi)
+// FITUR BARU: Auto Expired Account Scheduler (Setiap Jam 00:01)
 // ==========================================
 func startExpiredAccountScheduler(bot *tgbotapi.BotAPI, adminID int64) {
     for {
         now := time.Now()
-        // Hitung waktu jam 06:00 hari ini
-        // (Year, Month, Day, Hour, Minute, Second, Nanosecond, Location)
-        nextRun := time.Date(now.Year(), now.Month(), now.Day(), 6, 0, 0, 0, now.Location())
-
-        // Jika sekarang sudah lewat jam 06:00, jadwalkan untuk besok
+        // Hitung waktu jam 00:01 hari ini
+        nextRun := time.Date(now.Year(), now.Month(), now.Day(), 0, 1, 0, 0, now.Location())
+        
+        // Jika sekarang sudah lewat jam 00:01, jadwalkan untuk besok
         if now.After(nextRun) {
             nextRun = nextRun.Add(24 * time.Hour)
         }
@@ -890,10 +803,10 @@ func startExpiredAccountScheduler(bot *tgbotapi.BotAPI, adminID int64) {
         time.Sleep(waitDuration)
 
         log.Println("🧹 Menjalankan pembersihan akun expired otomatis...")
-
+        
         // Panggil API Cleanup
         res, err := apiCall("POST", "/cron/cleanup", nil)
-
+        
         if err != nil {
             log.Printf("Error Auto Cleanup: %v", err)
             msg := tgbotapi.NewMessage(adminID, fmt.Sprintf("❌ Error Auto Cleanup: %v", err))
@@ -1133,31 +1046,30 @@ func getMainMenuKeyboard(config *BotConfig, chatID int64) tgbotapi.InlineKeyboar
         }
 
         rows := [][]tgbotapi.InlineKeyboardButton{
-    tgbotapi.NewInlineKeyboardRow(
-        tgbotapi.NewInlineKeyboardButtonData("👤 Create pasword", "menu_create"),
-        tgbotapi.NewInlineKeyboardButtonData("🎟️ Trial 1 Hari", "menu_trial"),
-    ),
-    tgbotapi.NewInlineKeyboardRow(
-        tgbotapi.NewInlineKeyboardButtonData("🗑️ Delete pasword", "menu_delete"),
-        tgbotapi.NewInlineKeyboardButtonData("🔄 Renew", "menu_renew"),
-    ),
-    tgbotapi.NewInlineKeyboardRow(
-        tgbotapi.NewInlineKeyboardButtonData("📋 List Passwords", "menu_list"),
-        tgbotapi.NewInlineKeyboardButtonData("📊 System Info", "menu_info"),
-    ),
-    tgbotapi.NewInlineKeyboardRow(
-        tgbotapi.NewInlineKeyboardButtonData("💾 Backup & Restore", "menu_backup_restore"),
-    ),
-    tgbotapi.NewInlineKeyboardRow(
-        tgbotapi.NewInlineKeyboardButtonData("⏳ Set VPS Exp", "menu_set_vps_exp"),
-        tgbotapi.NewInlineKeyboardButtonData("💰 Set Donasi", "menu_set_donasi"),
-    ),
-    tgbotapi.NewInlineKeyboardRow(
-        tgbotapi.NewInlineKeyboardButtonData(modeLabel, "toggle_mode"),
-    ),
-}
-
-return tgbotapi.NewInlineKeyboardMarkup(rows...)
+            tgbotapi.NewInlineKeyboardRow(
+                tgbotapi.NewInlineKeyboardButtonData("👤 Create pasword", "menu_create"),
+                tgbotapi.NewInlineKeyboardButtonData("🗑️ Delete pasword", "menu_delete"),
+            ),
+            tgbotapi.NewInlineKeyboardRow(
+                tgbotapi.NewInlineKeyboardButtonData("🔄 Renew", "menu_renew"),
+                tgbotapi.NewInlineKeyboardButtonData("📋 List Passwords", "menu_list"),
+            ),
+            tgbotapi.NewInlineKeyboardRow(
+                tgbotapi.NewInlineKeyboardButtonData("📊 System Info", "menu_info"),
+                tgbotapi.NewInlineKeyboardButtonData("💾 Backup & Restore", "menu_backup_restore"),
+            ),
+            tgbotapi.NewInlineKeyboardRow(
+                tgbotapi.NewInlineKeyboardButtonData("🧹 Cleanup Expired", "menu_cleanup"),
+                tgbotapi.NewInlineKeyboardButtonData("⏳ Set VPS Exp", "menu_set_vps_exp"),
+            ),
+            tgbotapi.NewInlineKeyboardRow(
+                tgbotapi.NewInlineKeyboardButtonData("💰 Set Donasi", "menu_set_donasi"),
+            ),
+            tgbotapi.NewInlineKeyboardRow(
+                tgbotapi.NewInlineKeyboardButtonData(modeLabel, "toggle_mode"),
+            ),
+        }
+        return tgbotapi.NewInlineKeyboardMarkup(rows...)
     }
 
     // Menu Public
@@ -1232,7 +1144,7 @@ func showUserSelection(bot *tgbotapi.BotAPI, chatID int64, page int, action stri
         return
     }
 
-    perPage := 100 // MODIFIED: Changed from 10 to 100
+    perPage := 10
     totalPages := (len(users) + perPage - 1) / perPage
 
     if page < 1 {
