@@ -117,7 +117,7 @@ func main() {
 
     // Scheduler Backup setiap 4 jam
     go startAutoBackupScheduler(bot, config.AdminID)
-    
+
     // Scheduler Auto Expired setiap hari jam 00:01
     go startExpiredAccountScheduler(bot, config.AdminID)
 
@@ -204,7 +204,8 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
         showUserSelection(bot, chatID, 1, "renew")
     case query.Data == "menu_list":
         if userID == config.AdminID {
-            listUsers(bot, chatID)
+            // UBAH: Memanggil listUsers dengan halaman 1
+            listUsers(bot, chatID, 1)
         }
     case query.Data == "menu_cleanup":
         if userID == config.AdminID {
@@ -436,7 +437,7 @@ func startCreateUser(bot *tgbotapi.BotAPI, chatID int64, userID int64, config *B
 
     userStates[userID] = "create_username"
     tempUserData[userID] = make(map[string]string)
-    sendMessage(bot, chatID, "👤 Masukkan Password/Username:")
+    sendMessage(bot, chatID, "👤 Masukkan Password:")
 }
 
 func startSetVpsExp(bot *tgbotapi.BotAPI, chatID int64, userID int64) {
@@ -485,11 +486,18 @@ func cancelOperation(bot *tgbotapi.BotAPI, chatID int64, userID int64, config *B
     showMainMenu(bot, chatID, config)
 }
 
+// UBAH: Logika pagination diperbarui untuk menangani list, renew, delete
 func handlePagination(bot *tgbotapi.BotAPI, chatID int64, data string) {
+    // Format: "page_action:num" (contoh: "page_list:1", "page_delete:2")
     parts := strings.Split(data, ":")
-    action := parts[0][5:]
+    action := parts[0][5:] // hapus prefix "page_"
     page, _ := strconv.Atoi(parts[1])
-    showUserSelection(bot, chatID, page, action)
+
+    if action == "list" {
+        listUsers(bot, chatID, page)
+    } else {
+        showUserSelection(bot, chatID, page, action)
+    }
 }
 
 func toggleMode(bot *tgbotapi.BotAPI, chatID int64, userID int64, config *BotConfig) {
@@ -591,7 +599,8 @@ func deleteUser(bot *tgbotapi.BotAPI, chatID int64, username string, config *Bot
     }
 }
 
-func listUsers(bot *tgbotapi.BotAPI, chatID int64) {
+// UBAH: Fungsi listUsers sekarang mendukung pagination 100 per halaman
+func listUsers(bot *tgbotapi.BotAPI, chatID int64, page int) {
     res, err := apiCall("GET", "/users", nil)
     if err != nil {
         replyError(bot, chatID, "Error API: "+err.Error())
@@ -605,8 +614,25 @@ func listUsers(bot *tgbotapi.BotAPI, chatID int64) {
             return
         }
 
-        msg := "📋 「 DAFTAR USER AKTIF 」\n\n"
-        for _, u := range users {
+        // UBAH: Batas per halaman menjadi 100
+        perPage := 100
+        totalPages := (len(users) + perPage - 1) / perPage
+
+        if page < 1 {
+            page = 1
+        }
+        if page > totalPages {
+            page = totalPages
+        }
+
+        start := (page - 1) * perPage
+        end := start + perPage
+        if end > len(users) {
+            end = len(users)
+        }
+
+        msg := fmt.Sprintf("📋 「 DAFTAR USER AKTIF 」\nHalaman %d/%d\n\n", page, totalPages)
+        for _, u := range users[start:end] {
             user := u.(map[string]interface{})
             status := "🟢"
             if user["status"] == "Expired" {
@@ -615,8 +641,24 @@ func listUsers(bot *tgbotapi.BotAPI, chatID int64) {
             msg += fmt.Sprintf("%s `%s` ⌛ %s\n", status, user["password"], user["expired"])
         }
 
+        // Membuat tombol navigasi
+        var rows [][]tgbotapi.InlineKeyboardButton
+        var navRow []tgbotapi.InlineKeyboardButton
+
+        if page > 1 {
+            navRow = append(navRow, tgbotapi.NewInlineKeyboardButtonData("⬅️ Prev", fmt.Sprintf("page_list:%d", page-1)))
+        }
+        if page < totalPages {
+            navRow = append(navRow, tgbotapi.NewInlineKeyboardButtonData("Next ➡️", fmt.Sprintf("page_list:%d", page+1)))
+        }
+        if len(navRow) > 0 {
+            rows = append(rows, navRow)
+        }
+        rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("❌ Close", "cancel")))
+
         reply := tgbotapi.NewMessage(chatID, msg)
         reply.ParseMode = "Markdown"
+        reply.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(rows...)
         sendAndTrack(bot, reply)
     } else {
         replyError(bot, chatID, "Gagal mengambil data.")
@@ -790,7 +832,7 @@ func startExpiredAccountScheduler(bot *tgbotapi.BotAPI, adminID int64) {
         now := time.Now()
         // Hitung waktu jam 00:01 hari ini
         nextRun := time.Date(now.Year(), now.Month(), now.Day(), 0, 1, 0, 0, now.Location())
-        
+
         // Jika sekarang sudah lewat jam 00:01, jadwalkan untuk besok
         if now.After(nextRun) {
             nextRun = nextRun.Add(24 * time.Hour)
@@ -803,10 +845,10 @@ func startExpiredAccountScheduler(bot *tgbotapi.BotAPI, adminID int64) {
         time.Sleep(waitDuration)
 
         log.Println("🧹 Menjalankan pembersihan akun expired otomatis...")
-        
+
         // Panggil API Cleanup
         res, err := apiCall("POST", "/cron/cleanup", nil)
-        
+
         if err != nil {
             log.Printf("Error Auto Cleanup: %v", err)
             msg := tgbotapi.NewMessage(adminID, fmt.Sprintf("❌ Error Auto Cleanup: %v", err))
@@ -1046,30 +1088,28 @@ func getMainMenuKeyboard(config *BotConfig, chatID int64) tgbotapi.InlineKeyboar
         }
 
         rows := [][]tgbotapi.InlineKeyboardButton{
-            tgbotapi.NewInlineKeyboardRow(
-                tgbotapi.NewInlineKeyboardButtonData("👤 Create pasword", "menu_create"),
-                tgbotapi.NewInlineKeyboardButtonData("🗑️ Delete pasword", "menu_delete"),
-            ),
-            tgbotapi.NewInlineKeyboardRow(
-                tgbotapi.NewInlineKeyboardButtonData("🔄 Renew", "menu_renew"),
-                tgbotapi.NewInlineKeyboardButtonData("📋 List Passwords", "menu_list"),
-            ),
-            tgbotapi.NewInlineKeyboardRow(
-                tgbotapi.NewInlineKeyboardButtonData("📊 System Info", "menu_info"),
-                tgbotapi.NewInlineKeyboardButtonData("💾 Backup & Restore", "menu_backup_restore"),
-            ),
-            tgbotapi.NewInlineKeyboardRow(
-                tgbotapi.NewInlineKeyboardButtonData("🧹 Cleanup Expired", "menu_cleanup"),
-                tgbotapi.NewInlineKeyboardButtonData("⏳ Set VPS Exp", "menu_set_vps_exp"),
-            ),
-            tgbotapi.NewInlineKeyboardRow(
-                tgbotapi.NewInlineKeyboardButtonData("💰 Set Donasi", "menu_set_donasi"),
-            ),
-            tgbotapi.NewInlineKeyboardRow(
-                tgbotapi.NewInlineKeyboardButtonData(modeLabel, "toggle_mode"),
-            ),
-        }
-        return tgbotapi.NewInlineKeyboardMarkup(rows...)
+    tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonData("👤 Create Password", "menu_create"),
+        tgbotapi.NewInlineKeyboardButtonData("🗑️ Delete Password", "menu_delete"),
+    ),
+    tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonData("🔄 Renew Account", "menu_renew"),
+        tgbotapi.NewInlineKeyboardButtonData("📋 List Passwords", "menu_list"),
+    ),
+    tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonData("📊 System Info", "menu_info"),
+        tgbotapi.NewInlineKeyboardButtonData("💰 Set Donasi", "menu_set_donasi"),
+    ),
+    tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonData("⏳ Set VPS Exp", "menu_set_vps_exp"),
+        tgbotapi.NewInlineKeyboardButtonData(modeLabel, "toggle_mode"),
+    ),
+    tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonData("💾 Backup & Restore", "menu_backup_restore"),
+    ),
+}
+
+return tgbotapi.NewInlineKeyboardMarkup(rows...)
     }
 
     // Menu Public
@@ -1132,6 +1172,7 @@ func sendAccountInfo(bot *tgbotapi.BotAPI, chatID int64, data map[string]interfa
     showMainMenu(bot, chatID, config)
 }
 
+// UBAH: showUserSelection sekarang menggunakan 100 item per halaman
 func showUserSelection(bot *tgbotapi.BotAPI, chatID int64, page int, action string) {
     users, err := getUsers()
     if err != nil {
@@ -1144,7 +1185,8 @@ func showUserSelection(bot *tgbotapi.BotAPI, chatID int64, page int, action stri
         return
     }
 
-    perPage := 10
+    // UBAH: Batas per halaman menjadi 100
+    perPage := 100
     totalPages := (len(users) + perPage - 1) / perPage
 
     if page < 1 {
