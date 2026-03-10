@@ -746,8 +746,8 @@ func showBackupRestoreMenu(bot *tgbotapi.BotAPI, chatID int64) {
     msg.ParseMode = "Markdown"
     msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
         tgbotapi.NewInlineKeyboardRow(
-            tgbotapi.NewInlineKeyboardButtonData("⬇️ Backup Data", "menu_backup_action"),
-            tgbotapi.NewInlineKeyboardButtonData("⬆️ Restore Data", "menu_restore_action"),
+            tgbotapi.NewInlineKeyboardButtonData("⬇️ Backup", "menu_backup_action"),
+            tgbotapi.NewInlineKeyboardButtonData("⬆️ Restore", "menu_restore_action"),
         ),
         tgbotapi.NewInlineKeyboardRow(
             tgbotapi.NewInlineKeyboardButtonData("❌ Kembali", "cancel"),
