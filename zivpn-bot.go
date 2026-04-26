@@ -195,7 +195,7 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
             bot.Request(tgbotapi.NewCallback(query.ID, "Akses Ditolak"))
             return
         }
-        showUserSelection(bot, chatID, 1, "delete")
+        showDeleteMenu(bot, chatID) // PANGGIL MENU BARU
     case query.Data == "menu_renew":
         if userID != config.AdminID {
             bot.Request(tgbotapi.NewCallback(query.ID, "Akses Ditolak"))
@@ -240,6 +240,17 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
         deleteUser(bot, chatID, username, config)
     case query.Data == "toggle_mode":
         toggleMode(bot, chatID, userID, config)
+
+    // HANDLE CALLBACK BARU UNTUK DELETE MENU
+    case query.Data == "delete_single":
+        showUserSelection(bot, chatID, 1, "delete")
+    case query.Data == "delete_expiring_soon":
+        confirmMassDelete(bot, chatID, "expiring_soon")
+    case query.Data == "delete_all":
+        confirmMassDelete(bot, chatID, "all")
+    case strings.HasPrefix(query.Data, "confirm_mass_delete:"):
+        action := strings.TrimPrefix(query.Data, "confirm_mass_delete:")
+        performMassDelete(bot, chatID, action, config)
     }
 
     bot.Request(tgbotapi.NewCallback(query.ID, ""))
@@ -597,6 +608,162 @@ func deleteUser(bot *tgbotapi.BotAPI, chatID int64, username string, config *Bot
         replyError(bot, chatID, fmt.Sprintf("Gagal: %s", res["message"]))
         showMainMenu(bot, chatID, config)
     }
+}
+
+// ==========================================
+// FITUR BARU: Delete Menu & Mass Delete
+// ==========================================
+
+// showDeleteMenu menampilkan opsi penghapusan
+func showDeleteMenu(bot *tgbotapi.BotAPI, chatID int64) {
+    msgText := "🗑️ 「 MANAJEMEN HAPUS PASSWORD 」\n\nSilakan pilih metode penghapusan:"
+
+    msg := tgbotapi.NewMessage(chatID, msgText)
+    msg.ParseMode = "Markdown"
+    msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+        tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonData("🗑️ Hapus Satu (Pakai Next/Prev)", "delete_single"),
+        ),
+        tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonData("⚠️ Hapus Expired < 1 Hari", "delete_expiring_soon"),
+        ),
+        tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonData("🧹 Hapus Semua (Massal)", "delete_all"),
+        ),
+        tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonData("❌ Kembali", "cancel"),
+        ),
+    )
+    sendAndTrack(bot, msg)
+}
+
+// confirmMassDelete meminta konfirmasi sebelum menghapus banyak user
+func confirmMassDelete(bot *tgbotapi.BotAPI, chatID int64, action string) {
+    var warningText string
+    var confirmBtn string
+
+    if action == "expiring_soon" {
+        warningText = "Apakah Anda yakin ingin menghapus SEMUA akun yang masa aktifnya kurang dari 24 jam?"
+        confirmBtn = "confirm_mass_delete:expiring_soon"
+    } else if action == "all" {
+        warningText = "⛔ PERINGATAN: Ini akan menghapus SEMUA AKUN (Trial & Premium).\n\nApakah Anda yakin?"
+        confirmBtn = "confirm_mass_delete:all"
+    } else {
+        return
+    }
+
+    msg := tgbotapi.NewMessage(chatID, warningText)
+    msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+        tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonData("✅ Ya, Lanjutkan", confirmBtn),
+            tgbotapi.NewInlineKeyboardButtonData("❌ Batal", "cancel"),
+        ),
+    )
+    sendAndTrack(bot, msg)
+}
+
+// performMassDelete mengeksekusi logika penghapusan massal
+func performMassDelete(bot *tgbotapi.BotAPI, chatID int64, action string, config *BotConfig) {
+    loadingMsg, _ := bot.Send(tgbotapi.NewMessage(chatID, "⏳ Memproses data pengguna..."))
+
+    users, err := getUsers()
+    if err != nil {
+        bot.Send(tgbotapi.NewMessage(chatID, "❌ Gagal mengambil data user."))
+        showMainMenu(bot, chatID, config)
+        return
+    }
+
+    if len(users) == 0 {
+        bot.Send(tgbotapi.NewMessage(chatID, "✅ Tidak ada user untuk dihapus."))
+        showMainMenu(bot, chatID, config)
+        return
+    }
+
+    var toDelete []string
+    now := time.Now()
+
+    for _, u := range users {
+        // Parsing tanggal expired (asumsi format: 2006-01-02 15:04:05 atau 2006-01-02)
+        expTime, err := parseUserExpiry(u.Expired)
+        if err != nil {
+            continue // Skip jika format tanggal salah
+        }
+
+        if action == "all" {
+            // Hapus semua
+            toDelete = append(toDelete, u.Password)
+        } else if action == "expiring_soon" {
+            // Hapus jika Active (Status bukan Expired) DAN sisa waktu < 24 jam
+            if u.Status != "Expired" {
+                duration := expTime.Sub(now)
+                if duration > 0 && duration <= 24*time.Hour {
+                    toDelete = append(toDelete, u.Password)
+                }
+            }
+        }
+    }
+
+    // Hapus pesan loading
+    bot.Request(tgbotapi.NewDeleteMessage(chatID, loadingMsg.MessageID))
+
+    if len(toDelete) == 0 {
+        msg := "✅ Tidak ada user yang memenuhi kriteria untuk dihapus."
+        if action == "expiring_soon" {
+            msg = "✅ Tidak ada user yang akan expired dalam 24 jam ke depan."
+        }
+        bot.Send(tgbotapi.NewMessage(chatID, msg))
+        showMainMenu(bot, chatID, config)
+        return
+    }
+
+    // Proses hapus satu per satu
+    successCount := 0
+    var deletedList strings.Builder
+
+    // Update status loading
+    statusMsg, _ := bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("🗑️ Menghapus %d akun...", len(toDelete))))
+
+    for i, pwd := range toDelete {
+        // Panggil API Delete
+        res, _ := apiCall("POST", "/user/delete", map[string]interface{}{"password": pwd})
+        if res["success"] == true {
+            successCount++
+            deletedList.WriteString(fmt.Sprintf("\n• %s", pwd))
+        }
+
+        // Update progress setiap 5 user atau di akhir
+        if (i+1)%5 == 0 || i == len(toDelete)-1 {
+            edit := tgbotapi.NewEditMessageText(chatID, statusMsg.MessageID, fmt.Sprintf("🗑️ Memproses... %d/%d", i+1, len(toDelete)))
+            bot.Send(edit)
+        }
+        time.Sleep(100 * time.Millisecond) // Jeda kecil agar API tidak overload
+    }
+
+    // Hapus pesan status
+    bot.Request(tgbotapi.NewDeleteMessage(chatID, statusMsg.MessageID))
+
+    finalMsg := fmt.Sprintf("✅ Selesai!\n\nBerhasil menghapus %d dari %d akun target.%s", successCount, len(toDelete), deletedList.String())
+
+    reply := tgbotapi.NewMessage(chatID, finalMsg)
+    reply.ParseMode = "Markdown"
+    bot.Send(reply)
+
+    showMainMenu(bot, chatID, config)
+}
+
+// Helper untuk parsing tanggal expired user
+func parseUserExpiry(dateStr string) (time.Time, error) {
+    // Coba format lengkap dulu
+    t, err := time.Parse("2006-01-02 15:04:05", dateStr)
+    if err == nil {
+        return t, nil
+    }
+    // Coba format YYYY-MM-DD
+    t, err = time.Parse("2006-01-02", dateStr)
+    if err == nil {
+        return t, nil
+    }
+    return time.Time{}, err
 }
 
 // UBAH: Fungsi listUsers sekarang mendukung pagination 100 per halaman
@@ -1088,28 +1255,28 @@ func getMainMenuKeyboard(config *BotConfig, chatID int64) tgbotapi.InlineKeyboar
         }
 
         rows := [][]tgbotapi.InlineKeyboardButton{
-    tgbotapi.NewInlineKeyboardRow(
-        tgbotapi.NewInlineKeyboardButtonData("👤 Create Password", "menu_create"),
-        tgbotapi.NewInlineKeyboardButtonData("🗑️ Delete Password", "menu_delete"),
-    ),
-    tgbotapi.NewInlineKeyboardRow(
-        tgbotapi.NewInlineKeyboardButtonData("🔄 Renew Account", "menu_renew"),
-        tgbotapi.NewInlineKeyboardButtonData("📋 List Passwords", "menu_list"),
-    ),
-    tgbotapi.NewInlineKeyboardRow(
-        tgbotapi.NewInlineKeyboardButtonData("📊 System Info", "menu_info"),
-        tgbotapi.NewInlineKeyboardButtonData("💰 Set Donasi", "menu_set_donasi"),
-    ),
-    tgbotapi.NewInlineKeyboardRow(
-        tgbotapi.NewInlineKeyboardButtonData("⏳ Set VPS Exp", "menu_set_vps_exp"),
-        tgbotapi.NewInlineKeyboardButtonData(modeLabel, "toggle_mode"),
-    ),
-    tgbotapi.NewInlineKeyboardRow(
-        tgbotapi.NewInlineKeyboardButtonData("💾 Backup & Restore", "menu_backup_restore"),
-    ),
-}
+            tgbotapi.NewInlineKeyboardRow(
+                tgbotapi.NewInlineKeyboardButtonData("👤 Create Password", "menu_create"),
+                tgbotapi.NewInlineKeyboardButtonData("🗑️ Delete Password", "menu_delete"),
+            ),
+            tgbotapi.NewInlineKeyboardRow(
+                tgbotapi.NewInlineKeyboardButtonData("🔄 Renew Account", "menu_renew"),
+                tgbotapi.NewInlineKeyboardButtonData("📋 List Passwords", "menu_list"),
+            ),
+            tgbotapi.NewInlineKeyboardRow(
+                tgbotapi.NewInlineKeyboardButtonData("📊 System Info", "menu_info"),
+                tgbotapi.NewInlineKeyboardButtonData("💰 Set Donasi", "menu_set_donasi"),
+            ),
+            tgbotapi.NewInlineKeyboardRow(
+                tgbotapi.NewInlineKeyboardButtonData("⏳ Set VPS Exp", "menu_set_vps_exp"),
+                tgbotapi.NewInlineKeyboardButtonData(modeLabel, "toggle_mode"),
+            ),
+            tgbotapi.NewInlineKeyboardRow(
+                tgbotapi.NewInlineKeyboardButtonData("💾 Backup & Restore", "menu_backup_restore"),
+            ),
+        }
 
-return tgbotapi.NewInlineKeyboardMarkup(rows...)
+        return tgbotapi.NewInlineKeyboardMarkup(rows...)
     }
 
     // Menu Public
