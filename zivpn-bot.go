@@ -808,7 +808,6 @@ func parseUserExpiry(dateStr string) (time.Time, error) {
     }
     return time.Time{}, err
 }
-
 func listUsers(bot *tgbotapi.BotAPI, chatID int64, page int) {
     res, err := apiCall("GET", "/users", nil)
     if err != nil {
@@ -1032,53 +1031,88 @@ func startAutoBackupScheduler(bot *tgbotapi.BotAPI, adminID int64) {
 }
 
 // ==========================================
-// FITUR: Auto Expired Account Scheduler (Setiap 5 Menit)
+// FITUR: Auto Expired Account Scheduler (FIXED)
 // ==========================================
 func startExpiredAccountScheduler(bot *tgbotapi.BotAPI, adminID int64) {
     ticker := time.NewTicker(5 * time.Minute)
     defer ticker.Stop()
 
-    log.Printf("⏰ Auto Cleanup Scheduler dimulai (Berjalan Setiap 5 Menit). Target Admin ID: %d", adminID)
+    log.Printf("⏰ Auto Cleanup Scheduler dimulai (Client-Side Check). Target Admin ID: %d", adminID)
 
     // Jalankan pertama kali setelah 10 detik bot start
     time.Sleep(10 * time.Second)
 
     for range ticker.C {
-        log.Println("🧹 Menjalankan pembersihan akun expired otomatis...")
+        log.Println("🧹 Menjalankan pengecekan dan pembersihan akun expired otomatis...")
 
-        res, err := apiCall("POST", "/cron/cleanup", nil)
-
+        // 1. Ambil semua data user dari database
+        users, err := getUsers()
         if err != nil {
-            log.Printf("Error Auto Cleanup: %v", err)
+            log.Printf("Gagal mengambil list user: %v", err)
             continue
         }
 
-        if res["success"] == true {
-            if data, ok := res["data"].(map[string]interface{}); ok {
-                count := int(data["deleted_count"].(float64))
-                if count > 0 {
-                    log.Printf("✅ Auto Cleanup: Berhasil menghapus %d akun expired.", count)
-                    
-                    deletedUsers := data["deleted_users"].([]interface{})
-                    var userList string
-                    for _, u := range deletedUsers {
-                        userList += fmt.Sprintf("\n• `%s`", u.(string))
-                    }
-                    
-                    msgText := fmt.Sprintf("⏰ *AUTO CLEANUP REPORT*\n\n✅ Berhasil menghapus %d akun expired:%s", count, userList)
-                    msg := tgbotapi.NewMessage(adminID, msgText)
-                    msg.ParseMode = "Markdown"
-                    bot.Send(msg)
+        var toDelete []UserData
+        now := time.Now()
+
+        // 2. Cari user yang statusnya Expired atau Waktunya sudah lewat
+        for _, u := range users {
+            // Jika status di DB sudah "Expired", kita skip karena mungkin sudah diproses
+            // Namun kita tetap cek tanggal untuk jaga-jaga
+            if u.Status == "Expired" {
+                // Opsional: Bisa uncomment baris bawah jika ingin paksa hapus yang status Expired tapi masih ada
+                // toDelete = append(toDelete, u)
+                continue
+            }
+
+            expTime, err := parseUserExpiry(u.Expired)
+            if err != nil {
+                continue // Format tanggal salah, skip
+            }
+
+            // LOGIKA UTAMA: Jika Waktu Sekarang > Waktu Expired user tersebut
+            // Ini akan menangkap Trial (10-30 menit) maupun Premium
+            if now.After(expTime) {
+                toDelete = append(toDelete, u)
+            }
+        }
+
+        // 3. Lakukan penghapusan satu per satu
+        deletedCount := 0
+        var deletedList strings.Builder
+
+        if len(toDelete) > 0 {
+            for _, u := range toDelete {
+                // Panggil API Delete User
+                res, err := apiCall("POST", "/user/delete", map[string]interface{}{
+                    "password": u.Password,
+                })
+
+                if err == nil && res["success"] == true {
+                    deletedCount++
+                    deletedList.WriteString(fmt.Sprintf("\n• `%s` (Exp: %s)", u.Password, u.Expired))
+                    log.Printf("✅ Auto Deleted: %s", u.Password)
                 } else {
-                    log.Println("Auto Cleanup: Tidak ada akun expired.")
+                    errMsg := "Unknown error"
+                    if m, ok := res["message"].(string); ok {
+                        errMsg = m
+                    }
+                    log.Printf("❌ Gagal Delete %s: %s", u.Password, errMsg)
                 }
+
+                // Jeda 200ms agar server tidak kaget (flood) karena banyak request
+                time.Sleep(200 * time.Millisecond)
             }
+        }
+
+        // 4. Lapor ke Admin jika ada yang terhapus
+        if deletedCount > 0 {
+            msgText := fmt.Sprintf("⏰ *AUTO CLEANUP REPORT*\n\n✅ Berhasil menghapus %d akun expired (Termasuk Trial):%s", deletedCount, deletedList.String())
+            msg := tgbotapi.NewMessage(adminID, msgText)
+            msg.ParseMode = "Markdown"
+            bot.Send(msg)
         } else {
-            errMsg := "Gagal memproses cleanup."
-            if m, ok := res["message"].(string); ok {
-                errMsg = m
-            }
-            log.Printf("Auto Cleanup Failed: %s", errMsg)
+            log.Println("Auto Cleanup: Tidak ada akun expired yang ditemukan.")
         }
     }
 }
