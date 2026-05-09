@@ -596,27 +596,31 @@ func showLockedUsersList(bot *tgbotapi.BotAPI, chatID int64) {
 
     if len(lockedMap) == 0 {
         sendMessage(bot, chatID, "✅ Tidak ada akun yang dikunci saat ini.")
-        showMainMenu(bot, chatID, &BotConfig{}) // config dummy, or pass actual if needed
+        // Kita perlu config yang valid untuk kembali ke menu utama, namun untuk di sini cukup dummy atau reload config jika perlu
+        // Agar aman dan sederhana, kita coba load config sebentar
+        config, _ := loadConfig()
+        showMainMenu(bot, chatID, &config)
         return
     }
 
-    msg := "🔓 「 LIST AKUN TERKUNCI 」\n\n"
     var rows [][]tgbotapi.InlineKeyboardButton
 
+    // Iterasi user yang terkunci dan buat tombol dengan format: Password (Expired Date)
     for _, u := range lockedMap {
-        msg += fmt.Sprintf("🔴 `%s` ⌛ %s\n", u.Password, u.Expired)
+        // Format label tombol sama persis style-nya dengan menu Lock: "🔴 password (tanggal)"
+        label := fmt.Sprintf("🔴 %s (%s)", u.Password, u.Expired)
         data := fmt.Sprintf("select_unlock:%s", u.Password)
+
         rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-            tgbotapi.NewInlineKeyboardButtonData("🔓 Unlock", data),
+            tgbotapi.NewInlineKeyboardButtonData(label, data),
         ))
     }
 
     rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("❌ Batal", "cancel")))
 
-    reply := tgbotapi.NewMessage(chatID, msg)
-    reply.ParseMode = "Markdown"
-    reply.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(rows...)
-    sendAndTrack(bot, reply)
+    msg := tgbotapi.NewMessage(chatID, "🔓 「 LIST AKUN TERKUNCI 」\n\nSilakan pilih akun untuk dibuka kembali:")
+    msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(rows...)
+    sendAndTrack(bot, msg)
 }
 
 // handleQuickCreate membuat akun secara instan dengan format password: viip{days}day{6angkaacak}
