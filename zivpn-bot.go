@@ -8,7 +8,7 @@ import (
     "io"
     "io/ioutil"
     "log"
-    "math/rand" // ADDED FOR RANDOM USERNAME
+    "math/rand"
     "net/http"
     "os"
     "os/exec"
@@ -42,7 +42,7 @@ const (
 // =====================================================
 // PENGATURAN GAMBAR (LOGO & DONASI)
 // =====================================================
-var BannerImageURL = "https://d.uguu.se/FwuepgvZ.jpg"
+var BannerImageURL = "https://d.uguu.se/FuSrMkiz.png"
 var DonationImageURL = "https://d.uguu.se/COLHUNWQ.png"
 
 var ApiUrl = "http://127.0.0.1:" + PortFile + "/api"
@@ -94,7 +94,7 @@ var animMutex sync.Mutex
 // ==========================================
 
 func main() {
-    // Seed random generator for Trial Usernames
+    // Seed random generator
     rand.Seed(time.Now().UnixNano())
 
     if keyBytes, err := ioutil.ReadFile(ApiKeyFile); err == nil {
@@ -122,7 +122,7 @@ func main() {
     // Scheduler Backup setiap 4 jam
     go startAutoBackupScheduler(bot, config.AdminID)
 
-    // Scheduler Auto Expired setiap hari jam 00:01
+    // Scheduler Auto Expired setiap 5 MENIT
     go startExpiredAccountScheduler(bot, config.AdminID)
 
     u := tgbotapi.NewUpdate(0)
@@ -184,8 +184,15 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
     switch {
     case query.Data == "menu_create":
         startCreateUser(bot, chatID, userID, config)
-    case query.Data == "menu_trial":
-        createTrialAccount(bot, chatID, userID, config)
+    
+    // UPDATE: Callback Trial 10 Menit
+    case query.Data == "menu_trial_10":
+        createTrialAccount(bot, chatID, userID, config, 10)
+    
+    // UPDATE: Callback Trial 30 Menit
+    case query.Data == "menu_trial_30":
+        createTrialAccount(bot, chatID, userID, config, 30)
+
     case query.Data == "menu_donasi":
         sendDonationInfo(bot, chatID)
     case query.Data == "menu_set_vps_exp":
@@ -201,7 +208,7 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
             bot.Request(tgbotapi.NewCallback(query.ID, "Akses Ditolak"))
             return
         }
-        showDeleteMenu(bot, chatID) // PANGGIL MENU BARU
+        showDeleteMenu(bot, chatID)
     case query.Data == "menu_renew":
         if userID != config.AdminID {
             bot.Request(tgbotapi.NewCallback(query.ID, "Akses Ditolak"))
@@ -210,7 +217,6 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
         showUserSelection(bot, chatID, 1, "renew")
     case query.Data == "menu_list":
         if userID == config.AdminID {
-            // UBAH: Memanggil listUsers dengan halaman 1
             listUsers(bot, chatID, 1)
         }
     case query.Data == "menu_cleanup":
@@ -431,36 +437,34 @@ func animateLoading(bot *tgbotapi.BotAPI, chatID int64, msgID int, stop <-chan b
 // Feature Implementation
 // ==========================================
 
-// Helper generate random string for trial
-func generateRandomString(length int) string {
-    const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-    b := make([]byte, length)
+// UPDATE: Generate Password TrialVip + 5 Angka Acak
+func generateTrialPassword() string {
+    const digits = "0123456789"
+    b := make([]byte, 5) // 5 digit angka
     for i := range b {
-        b[i] = charset[rand.Intn(len(charset))]
+        b[i] = digits[rand.Intn(len(digits))]
     }
-    return "TRIAL-" + string(b)
+    return "TrialVip" + string(b)
 }
 
-// FITUR BARU: Create Trial Account (30 Menit)
-func createTrialAccount(bot *tgbotapi.BotAPI, chatID int64, userID int64, config *BotConfig) {
-    // Jika mode public, kita bisa check cooldown disini jika mau
-    // Untuk sekarang kita biarkan bebas (bypass cooldown) agar user bisa test koneksi
-    
-    loadingMsg := tgbotapi.NewMessage(chatID, "⏳ Membuat Akun Trial (30 Menit)...")
+// UPDATE: Create Trial Account dengan parameter durasi menit
+func createTrialAccount(bot *tgbotapi.BotAPI, chatID int64, userID int64, config *BotConfig, durationMinutes int) {
+    loadingMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("⏳ Membuat Akun Trial (%d Menit)...", durationMinutes))
     sentMsg, _ := bot.Send(loadingMsg)
 
     stopAnim := make(chan bool)
     go animateLoading(bot, chatID, sentMsg.MessageID, stopAnim)
 
-    // Generate username random
-    username := generateRandomString(6)
+    // Generate username format TrialVipXXXXX
+    username := generateTrialPassword()
     
-    // Durasi 0.5 hari = 30 menit (asumsi API support float)
-    trialDuration := 0
+    // Hitung durasi dalam hari (desimal)
+    // Rumus: Menit / (60 * 24)
+    days := float64(durationMinutes) / 1440.0
 
     res, err := apiCall("POST", "/user/create", map[string]interface{}{
         "password": username,
-        "days":     trialDuration,
+        "days":     days,
     })
 
     stopAnim <- true
@@ -473,9 +477,6 @@ func createTrialAccount(bot *tgbotapi.BotAPI, chatID int64, userID int64, config
     }
 
     if res["success"] == true {
-        // Jika mode public, kita tidak save usage agar user bisa spam trial (opsional)
-        // if config.Mode == "public" && userID != config.AdminID { savePublicUsage(userID) }
-
         data := res["data"].(map[string]interface{})
         sendAccountInfo(bot, chatID, data, config)
     } else {
@@ -556,11 +557,9 @@ func cancelOperation(bot *tgbotapi.BotAPI, chatID int64, userID int64, config *B
     showMainMenu(bot, chatID, config)
 }
 
-// UBAH: Logika pagination diperbarui untuk menangani list, renew, delete
 func handlePagination(bot *tgbotapi.BotAPI, chatID int64, data string) {
-    // Format: "page_action:num" (contoh: "page_list:1", "page_delete:2")
     parts := strings.Split(data, ":")
-    action := parts[0][5:] // hapus prefix "page_"
+    action := parts[0][5:]
     page, _ := strconv.Atoi(parts[1])
 
     if action == "list" {
@@ -673,7 +672,6 @@ func deleteUser(bot *tgbotapi.BotAPI, chatID int64, username string, config *Bot
 // FITUR BARU: Delete Menu & Mass Delete
 // ==========================================
 
-// showDeleteMenu menampilkan opsi penghapusan
 func showDeleteMenu(bot *tgbotapi.BotAPI, chatID int64) {
     msgText := "🗑️ 「 MANAJEMEN HAPUS PASSWORD 」\n\nSilakan pilih metode penghapusan:"
 
@@ -696,7 +694,6 @@ func showDeleteMenu(bot *tgbotapi.BotAPI, chatID int64) {
     sendAndTrack(bot, msg)
 }
 
-// confirmMassDelete meminta konfirmasi sebelum menghapus banyak user
 func confirmMassDelete(bot *tgbotapi.BotAPI, chatID int64, action string) {
     var warningText string
     var confirmBtn string
@@ -721,7 +718,6 @@ func confirmMassDelete(bot *tgbotapi.BotAPI, chatID int64, action string) {
     sendAndTrack(bot, msg)
 }
 
-// performMassDelete mengeksekusi logika penghapusan massal
 func performMassDelete(bot *tgbotapi.BotAPI, chatID int64, action string, config *BotConfig) {
     loadingMsg, _ := bot.Send(tgbotapi.NewMessage(chatID, "⏳ Memproses data pengguna..."))
 
@@ -742,17 +738,14 @@ func performMassDelete(bot *tgbotapi.BotAPI, chatID int64, action string, config
     now := time.Now()
 
     for _, u := range users {
-        // Parsing tanggal expired (asumsi format: 2006-01-02 15:04:05 atau 2006-01-02)
         expTime, err := parseUserExpiry(u.Expired)
         if err != nil {
-            continue // Skip jika format tanggal salah
+            continue
         }
 
         if action == "all" {
-            // Hapus semua
             toDelete = append(toDelete, u.Password)
         } else if action == "expiring_soon" {
-            // Hapus jika Active (Status bukan Expired) DAN sisa waktu < 24 jam
             if u.Status != "Expired" {
                 duration := expTime.Sub(now)
                 if duration > 0 && duration <= 24*time.Hour {
@@ -762,7 +755,6 @@ func performMassDelete(bot *tgbotapi.BotAPI, chatID int64, action string, config
         }
     }
 
-    // Hapus pesan loading
     bot.Request(tgbotapi.NewDeleteMessage(chatID, loadingMsg.MessageID))
 
     if len(toDelete) == 0 {
@@ -775,30 +767,24 @@ func performMassDelete(bot *tgbotapi.BotAPI, chatID int64, action string, config
         return
     }
 
-    // Proses hapus satu per satu
     successCount := 0
     var deletedList strings.Builder
-
-    // Update status loading
     statusMsg, _ := bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("🗑️ Menghapus %d akun...", len(toDelete))))
 
     for i, pwd := range toDelete {
-        // Panggil API Delete
         res, _ := apiCall("POST", "/user/delete", map[string]interface{}{"password": pwd})
         if res["success"] == true {
             successCount++
             deletedList.WriteString(fmt.Sprintf("\n• %s", pwd))
         }
 
-        // Update progress setiap 5 user atau di akhir
         if (i+1)%5 == 0 || i == len(toDelete)-1 {
             edit := tgbotapi.NewEditMessageText(chatID, statusMsg.MessageID, fmt.Sprintf("🗑️ Memproses... %d/%d", i+1, len(toDelete)))
             bot.Send(edit)
         }
-        time.Sleep(100 * time.Millisecond) // Jeda kecil agar API tidak overload
+        time.Sleep(100 * time.Millisecond)
     }
 
-    // Hapus pesan status
     bot.Request(tgbotapi.NewDeleteMessage(chatID, statusMsg.MessageID))
 
     finalMsg := fmt.Sprintf("✅ Selesai!\n\nBerhasil menghapus %d dari %d akun target.%s", successCount, len(toDelete), deletedList.String())
@@ -810,14 +796,11 @@ func performMassDelete(bot *tgbotapi.BotAPI, chatID int64, action string, config
     showMainMenu(bot, chatID, config)
 }
 
-// Helper untuk parsing tanggal expired user
 func parseUserExpiry(dateStr string) (time.Time, error) {
-    // Coba format lengkap dulu
     t, err := time.Parse("2006-01-02 15:04:05", dateStr)
     if err == nil {
         return t, nil
     }
-    // Coba format YYYY-MM-DD
     t, err = time.Parse("2006-01-02", dateStr)
     if err == nil {
         return t, nil
@@ -825,7 +808,6 @@ func parseUserExpiry(dateStr string) (time.Time, error) {
     return time.Time{}, err
 }
 
-// UBAH: Fungsi listUsers sekarang mendukung pagination 100 per halaman
 func listUsers(bot *tgbotapi.BotAPI, chatID int64, page int) {
     res, err := apiCall("GET", "/users", nil)
     if err != nil {
@@ -840,7 +822,6 @@ func listUsers(bot *tgbotapi.BotAPI, chatID int64, page int) {
             return
         }
 
-        // UBAH: Batas per halaman menjadi 100
         perPage := 100
         totalPages := (len(users) + perPage - 1) / perPage
 
@@ -867,7 +848,6 @@ func listUsers(bot *tgbotapi.BotAPI, chatID int64, page int) {
             msg += fmt.Sprintf("%s `%s` ⌛ %s\n", status, user["password"], user["expired"])
         }
 
-        // Membuat tombol navigasi
         var rows [][]tgbotapi.InlineKeyboardButton
         var navRow []tgbotapi.InlineKeyboardButton
 
@@ -1051,34 +1031,24 @@ func startAutoBackupScheduler(bot *tgbotapi.BotAPI, adminID int64) {
 }
 
 // ==========================================
-// FITUR BARU: Auto Expired Account Scheduler (Setiap Jam 00:01)
+// FITUR: Auto Expired Account Scheduler (Setiap 5 Menit)
 // ==========================================
 func startExpiredAccountScheduler(bot *tgbotapi.BotAPI, adminID int64) {
-    for {
-        now := time.Now()
-        // Hitung waktu jam 00:01 hari ini
-        nextRun := time.Date(now.Year(), now.Month(), now.Day(), 0, 1, 0, 0, now.Location())
+    ticker := time.NewTicker(5 * time.Minute)
+    defer ticker.Stop()
 
-        // Jika sekarang sudah lewat jam 00:01, jadwalkan untuk besok
-        if now.After(nextRun) {
-            nextRun = nextRun.Add(24 * time.Hour)
-        }
+    log.Printf("⏰ Auto Cleanup Scheduler dimulai (Berjalan Setiap 5 Menit). Target Admin ID: %d", adminID)
 
-        waitDuration := nextRun.Sub(now)
-        log.Printf("⏰ Scheduler Expired Akun: Berjalan dalam %v (pada %s)", waitDuration, nextRun.Format("2006-01-02 15:04:05"))
+    // Jalankan pertama kali setelah 10 detik bot start
+    time.Sleep(10 * time.Second)
 
-        // Tunggu hingga waktunya tiba
-        time.Sleep(waitDuration)
-
+    for range ticker.C {
         log.Println("🧹 Menjalankan pembersihan akun expired otomatis...")
 
-        // Panggil API Cleanup
         res, err := apiCall("POST", "/cron/cleanup", nil)
 
         if err != nil {
             log.Printf("Error Auto Cleanup: %v", err)
-            msg := tgbotapi.NewMessage(adminID, fmt.Sprintf("❌ Error Auto Cleanup: %v", err))
-            bot.Send(msg)
             continue
         }
 
@@ -1086,11 +1056,14 @@ func startExpiredAccountScheduler(bot *tgbotapi.BotAPI, adminID int64) {
             if data, ok := res["data"].(map[string]interface{}); ok {
                 count := int(data["deleted_count"].(float64))
                 if count > 0 {
+                    log.Printf("✅ Auto Cleanup: Berhasil menghapus %d akun expired.", count)
+                    
                     deletedUsers := data["deleted_users"].([]interface{})
                     var userList string
                     for _, u := range deletedUsers {
                         userList += fmt.Sprintf("\n• `%s`", u.(string))
                     }
+                    
                     msgText := fmt.Sprintf("⏰ *AUTO CLEANUP REPORT*\n\n✅ Berhasil menghapus %d akun expired:%s", count, userList)
                     msg := tgbotapi.NewMessage(adminID, msgText)
                     msg.ParseMode = "Markdown"
@@ -1233,7 +1206,6 @@ func getVpsExpiryInfo() string {
     return fmt.Sprintf("%d Hari %d Jam %d Menit", days, hours, minutes)
 }
 
-// Fungsi Helper untuk Format Rupiah (Titik pemisah ribuan)
 func formatRupiah(n int) string {
     s := strconv.Itoa(n)
     result := ""
@@ -1258,7 +1230,6 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
     totalAcc := getTotalAccounts()
     vpsExp := getVpsExpiryInfo()
 
-    // Load Donasi
     donationData := loadDonationData()
     donationAmount := formatRupiah(donationData.Collected)
 
@@ -1316,7 +1287,11 @@ func getMainMenuKeyboard(config *BotConfig, chatID int64) tgbotapi.InlineKeyboar
         rows := [][]tgbotapi.InlineKeyboardButton{
             tgbotapi.NewInlineKeyboardRow(
                 tgbotapi.NewInlineKeyboardButtonData("👤 Create Password", "menu_create"),
-                tgbotapi.NewInlineKeyboardButtonData("🧪 Trial (30 Min)", "menu_trial"), // BUTTON ADDED
+            ),
+            // UPDATE: Split Trial Buttons Admin
+            tgbotapi.NewInlineKeyboardRow(
+                tgbotapi.NewInlineKeyboardButtonData("🧪 Trial 10 Menit", "menu_trial_10"),
+                tgbotapi.NewInlineKeyboardButtonData("🧪 Trial 30 Menit", "menu_trial_30"),
             ),
             tgbotapi.NewInlineKeyboardRow(
                 tgbotapi.NewInlineKeyboardButtonData("🗑️ Delete Password", "menu_delete"),
@@ -1343,7 +1318,11 @@ func getMainMenuKeyboard(config *BotConfig, chatID int64) tgbotapi.InlineKeyboar
     rows := [][]tgbotapi.InlineKeyboardButton{
         tgbotapi.NewInlineKeyboardRow(
             tgbotapi.NewInlineKeyboardButtonData("👤 Create Password", "menu_create"),
-            tgbotapi.NewInlineKeyboardButtonData("🧪 Trial (30 Min)", "menu_trial"), // BUTTON ADDED
+        ),
+        // UPDATE: Split Trial Buttons Public
+        tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonData("🧪 Trial 10 Menit", "menu_trial_10"),
+            tgbotapi.NewInlineKeyboardButtonData("🧪 Trial 30 Menit", "menu_trial_30"),
         ),
     }
 
@@ -1400,7 +1379,6 @@ func sendAccountInfo(bot *tgbotapi.BotAPI, chatID int64, data map[string]interfa
     showMainMenu(bot, chatID, config)
 }
 
-// UBAH: showUserSelection sekarang menggunakan 100 item per halaman
 func showUserSelection(bot *tgbotapi.BotAPI, chatID int64, page int, action string) {
     users, err := getUsers()
     if err != nil {
@@ -1413,7 +1391,6 @@ func showUserSelection(bot *tgbotapi.BotAPI, chatID int64, page int, action stri
         return
     }
 
-    // UBAH: Batas per halaman menjadi 100
     perPage := 100
     totalPages := (len(users) + perPage - 1) / perPage
 
@@ -1677,4 +1654,4 @@ func getUsers() ([]UserData, error) {
     dataBytes, _ := json.Marshal(res["data"])
     json.Unmarshal(dataBytes, &users)
     return users, nil
-} 
+}
