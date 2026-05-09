@@ -8,6 +8,7 @@ import (
     "io"
     "io/ioutil"
     "log"
+    "math/rand" // ADDED FOR RANDOM USERNAME
     "net/http"
     "os"
     "os/exec"
@@ -93,6 +94,9 @@ var animMutex sync.Mutex
 // ==========================================
 
 func main() {
+    // Seed random generator for Trial Usernames
+    rand.Seed(time.Now().UnixNano())
+
     if keyBytes, err := ioutil.ReadFile(ApiKeyFile); err == nil {
         ApiKey = strings.TrimSpace(string(keyBytes))
     }
@@ -180,6 +184,8 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
     switch {
     case query.Data == "menu_create":
         startCreateUser(bot, chatID, userID, config)
+    case query.Data == "menu_trial":
+        createTrialAccount(bot, chatID, userID, config)
     case query.Data == "menu_donasi":
         sendDonationInfo(bot, chatID)
     case query.Data == "menu_set_vps_exp":
@@ -424,6 +430,59 @@ func animateLoading(bot *tgbotapi.BotAPI, chatID int64, msgID int, stop <-chan b
 // ==========================================
 // Feature Implementation
 // ==========================================
+
+// Helper generate random string for trial
+func generateRandomString(length int) string {
+    const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    b := make([]byte, length)
+    for i := range b {
+        b[i] = charset[rand.Intn(len(charset))]
+    }
+    return "TRIAL-" + string(b)
+}
+
+// FITUR BARU: Create Trial Account (30 Menit)
+func createTrialAccount(bot *tgbotapi.BotAPI, chatID int64, userID int64, config *BotConfig) {
+    // Jika mode public, kita bisa check cooldown disini jika mau
+    // Untuk sekarang kita biarkan bebas (bypass cooldown) agar user bisa test koneksi
+    
+    loadingMsg := tgbotapi.NewMessage(chatID, "⏳ Membuat Akun Trial (30 Menit)...")
+    sentMsg, _ := bot.Send(loadingMsg)
+
+    stopAnim := make(chan bool)
+    go animateLoading(bot, chatID, sentMsg.MessageID, stopAnim)
+
+    // Generate username random
+    username := generateRandomString(6)
+    
+    // Durasi 0.5 hari = 30 menit (asumsi API support float)
+    trialDuration := 0.5
+
+    res, err := apiCall("POST", "/user/create", map[string]interface{}{
+        "password": username,
+        "days":     trialDuration,
+    })
+
+    stopAnim <- true
+    bot.Request(tgbotapi.NewDeleteMessage(chatID, sentMsg.MessageID))
+
+    if err != nil {
+        replyError(bot, chatID, "Error API: "+err.Error())
+        showMainMenu(bot, chatID, config)
+        return
+    }
+
+    if res["success"] == true {
+        // Jika mode public, kita tidak save usage agar user bisa spam trial (opsional)
+        // if config.Mode == "public" && userID != config.AdminID { savePublicUsage(userID) }
+
+        data := res["data"].(map[string]interface{})
+        sendAccountInfo(bot, chatID, data, config)
+    } else {
+        replyError(bot, chatID, fmt.Sprintf("Gagal: %s", res["message"]))
+        showMainMenu(bot, chatID, config)
+    }
+}
 
 func startCreateUser(bot *tgbotapi.BotAPI, chatID int64, userID int64, config *BotConfig) {
     if config.Mode == "public" && userID != config.AdminID {
@@ -1257,22 +1316,23 @@ func getMainMenuKeyboard(config *BotConfig, chatID int64) tgbotapi.InlineKeyboar
         rows := [][]tgbotapi.InlineKeyboardButton{
             tgbotapi.NewInlineKeyboardRow(
                 tgbotapi.NewInlineKeyboardButtonData("👤 Create Password", "menu_create"),
+                tgbotapi.NewInlineKeyboardButtonData("🧪 Trial (30 Min)", "menu_trial"), // BUTTON ADDED
+            ),
+            tgbotapi.NewInlineKeyboardRow(
                 tgbotapi.NewInlineKeyboardButtonData("🗑️ Delete Password", "menu_delete"),
-            ),
-            tgbotapi.NewInlineKeyboardRow(
                 tgbotapi.NewInlineKeyboardButtonData("🔄 Renew Account", "menu_renew"),
+            ),
+            tgbotapi.NewInlineKeyboardRow(
                 tgbotapi.NewInlineKeyboardButtonData("📋 List Passwords", "menu_list"),
-            ),
-            tgbotapi.NewInlineKeyboardRow(
                 tgbotapi.NewInlineKeyboardButtonData("📊 System Info", "menu_info"),
-                tgbotapi.NewInlineKeyboardButtonData("💰 Set Donasi", "menu_set_donasi"),
             ),
             tgbotapi.NewInlineKeyboardRow(
+                tgbotapi.NewInlineKeyboardButtonData("💰 Set Donasi", "menu_set_donasi"),
                 tgbotapi.NewInlineKeyboardButtonData("⏳ Set VPS Exp", "menu_set_vps_exp"),
-                tgbotapi.NewInlineKeyboardButtonData(modeLabel, "toggle_mode"),
             ),
             tgbotapi.NewInlineKeyboardRow(
                 tgbotapi.NewInlineKeyboardButtonData("💾 Backup & Restore", "menu_backup_restore"),
+                tgbotapi.NewInlineKeyboardButtonData(modeLabel, "toggle_mode"),
             ),
         }
 
@@ -1283,6 +1343,7 @@ func getMainMenuKeyboard(config *BotConfig, chatID int64) tgbotapi.InlineKeyboar
     rows := [][]tgbotapi.InlineKeyboardButton{
         tgbotapi.NewInlineKeyboardRow(
             tgbotapi.NewInlineKeyboardButtonData("👤 Create Password", "menu_create"),
+            tgbotapi.NewInlineKeyboardButtonData("🧪 Trial (30 Min)", "menu_trial"), // BUTTON ADDED
         ),
     }
 
