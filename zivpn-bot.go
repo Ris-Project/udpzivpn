@@ -1677,4 +1677,4 @@ func getUsers() ([]UserData, error) {
     dataBytes, _ := json.Marshal(res["data"])
     json.Unmarshal(dataBytes, &users)
     return users, nil
-} perbaiki
+} 
