@@ -37,7 +37,8 @@ const (
     PublicCooldownDays = 6
     VpsExpiredFile     = "/etc/zivpn/vps_expired"
     DonationDataFile   = "/etc/zivpn/donation_data.json"
-    LockedUsersFile    = "/etc/zivpn/locked_users.json" // File untuk menyimpan data sementara
+    LockedUsersFile    = "/etc/zivpn/locked_users.json"
+    TrialPrefix        = "TRIAL-" // Prefix untuk akun trial
 )
 
 // =====================================================
@@ -133,6 +134,9 @@ func main() {
     // Scheduler Auto Expired setiap hari jam 00:01
     go startExpiredAccountScheduler(bot, config.AdminID)
 
+    // Scheduler Auto Delete Trial setiap 1 Menit
+    go startTrialCleanupScheduler(bot)
+
     u := tgbotapi.NewUpdate(0)
     u.Timeout = 60
     updates := bot.GetUpdatesChan(u)
@@ -173,7 +177,7 @@ func handleMessage(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, config *BotConfi
         case "start":
             showMainMenu(bot, msg.Chat.ID, config)
         default:
-            replyError(bot, msg.Chat.ID, "❌ Perintah tidak dikenal.")
+            replyError(bot, msg.Chat.ID, "Perintah tidak dikenal.")
         }
     }
 }
@@ -192,8 +196,20 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
     switch {
     case query.Data == "menu_create":
         startCreateUser(bot, chatID, userID, config)
+    case query.Data == "menu_trial":
+        handleTrialCreate(bot, chatID, userID, config) // Handle Trial Create
     case query.Data == "menu_donasi":
         sendDonationInfo(bot, chatID)
+
+    // --- MENU NAVIGATION (SUBMENUS) ---
+    case query.Data == "menu_account_mgmt":
+        showAccountMenu(bot, chatID)
+    case query.Data == "menu_system_settings":
+        showSystemMenu(bot, chatID)
+    case query.Data == "menu_quick_create":
+        showQuickCreateMenu(bot, chatID)
+    // ----------------------------------
+
     case query.Data == "menu_set_vps_exp":
         if userID == config.AdminID {
             startSetVpsExp(bot, chatID, userID)
@@ -248,7 +264,7 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
     case query.Data == "menu_lock_user":
         showUserSelection(bot, chatID, 1, "lock")
     case query.Data == "menu_unlock_user":
-        showLockedUsersList(bot, chatID) // Menampilkan list user yang terkunci
+        showLockedUsersList(bot, chatID)
     // END LOCK MENU
 
     case query.Data == "cancel":
@@ -292,20 +308,6 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
         days, err := strconv.Atoi(parts[1])
         if err == nil {
             handleQuickCreate(bot, chatID, userID, days, config)
-        }
-
-    // HANDLE SUBMENU BARU (AGAR TIDAK MENUMPUK)
-    case query.Data == "menu_quick_create":
-        if userID == config.AdminID {
-            showQuickCreateMenu(bot, chatID)
-        }
-    case query.Data == "menu_account_mgmt":
-        if userID == config.AdminID {
-            showAccountMenu(bot, chatID)
-        }
-    case query.Data == "menu_server_settings":
-        if userID == config.AdminID {
-            showServerMenu(bot, chatID, config)
         }
     }
 
@@ -365,7 +367,6 @@ func handleState(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, state string, conf
         stopAnim := make(chan bool)
         go animateLoading(bot, chatID, sentMsg.MessageID, stopAnim)
 
-        // --- PERUBAAN LOGIKA: EXPIRED TEPAT WAKTU ---
         now := time.Now()
         targetExpireTime := time.Date(now.Year(), now.Month(), now.Day()+daysInt, 0, 0, 1, 0, now.Location())
 
@@ -469,7 +470,7 @@ func handleState(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, state string, conf
 // ==========================================
 
 func animateLoading(bot *tgbotapi.BotAPI, chatID int64, msgID int, stop <-chan bool) {
-    frames := []string{"⏳ Memproses.", "⏳ Memproses..", "⏳ Memproses..."}
+    frames := []string{"⏳ Membuat Akun.", "⏳ Membuat Akun..", "⏳ Membuat Akun..."}
     i := 0
     for {
         select {
@@ -487,6 +488,112 @@ func animateLoading(bot *tgbotapi.BotAPI, chatID int64, msgID int, stop <-chan b
 // ==========================================
 // Feature Implementation
 // ==========================================
+
+// handleTrialCreate membuat akun trial 10 menit
+func handleTrialCreate(bot *tgbotapi.BotAPI, chatID int64, userID int64, config *BotConfig) {
+    // Jika mode public, cek cooldown juga (opsional, sesuaikan kebutuhan)
+    if config.Mode == "public" && userID != config.AdminID {
+        usageData, err := loadPublicUsage()
+        if err == nil {
+            if data, exists := usageData[userID]; exists {
+                lastTime := time.Unix(data.LastCreated, 0)
+                elapsed := time.Since(lastTime)
+                cooldownDuration := time.Duration(PublicCooldownDays) * 24 * time.Hour
+
+                if elapsed < cooldownDuration {
+                    remaining := cooldownDuration - elapsed
+                    remainingHours := int(remaining.Hours())
+                    days := remainingHours / 24
+                    hours := remainingHours % 24
+                    replyError(bot, chatID, fmt.Sprintf("⛔ Anda sudah membuat akun sebelumnya.\n🙏 Harap tunggu sekitar %d hari %d jam lagi.", days, hours))
+                    return
+                }
+            }
+        }
+    }
+
+    loadingMsg, _ := bot.Send(tgbotapi.NewMessage(chatID, "⏳ Membuat Akun Trial 10 Menit..."))
+    sentMsgID := loadingMsg.MessageID
+
+    // Generate password random dengan prefix TRIAL-
+    const charset = "0123456789"
+    b := make([]byte, 6)
+    for i := range b {
+        b[i] = charset[rand.Intn(len(charset))]
+    }
+    randomSuffix := string(b)
+    password := fmt.Sprintf("%s%s", TrialPrefix, randomSuffix)
+
+    // Set expired 10 menit dari sekarang
+    now := time.Now()
+    targetExpireTime := now.Add(10 * time.Minute)
+
+    // Call API
+    res, err := apiCall("POST", "/user/create", map[string]interface{}{
+        "password": password,
+        "expire":   targetExpireTime.Unix(),
+    })
+
+    // Delete loading message
+    bot.Request(tgbotapi.NewDeleteMessage(chatID, sentMsgID))
+
+    if err != nil {
+        replyError(bot, chatID, "Error API: "+err.Error())
+        return
+    }
+
+    if res["success"] == true {
+        if config.Mode == "public" && userID != config.AdminID {
+            savePublicUsage(userID)
+        }
+        data := res["data"].(map[string]interface{})
+        sendAccountInfo(bot, chatID, data, config)
+    } else {
+        replyError(bot, chatID, fmt.Sprintf("Gagal: %s", res["message"]))
+    }
+}
+
+// startTrialCleanupScheduler menjalankan pengecekan akun trial expired setiap 1 menit
+func startTrialCleanupScheduler(bot *tgbotapi.BotAPI) {
+    ticker := time.NewTicker(1 * time.Minute)
+    defer ticker.Stop()
+
+    log.Println("🗑️ Auto Delete Trial Scheduler dimulai (setiap 1 menit).")
+
+    for range ticker.C {
+        users, err := getUsers()
+        if err != nil {
+            log.Printf("Error fetching users for trial cleanup: %v", err)
+            continue
+        }
+
+        countDeleted := 0
+        now := time.Now()
+
+        for _, u := range users {
+            // Cek apakah user merupakan akun Trial (berdasarkan prefix)
+            if strings.HasPrefix(u.Password, TrialPrefix) {
+                expTime, err := parseUserExpiry(u.Expired)
+                if err != nil {
+                    continue
+                }
+
+                // Jika waktu sekarang sudah lewat dari waktu expired
+                if now.After(expTime) {
+                    _, delErr := apiCall("POST", "/user/delete", map[string]interface{}{"password": u.Password})
+                    if delErr == nil {
+                        countDeleted++
+                        log.Printf("Auto Delete Trial: Menghapus akun %s (Expired)", u.Password)
+                    }
+                }
+            }
+        }
+
+        if countDeleted > 0 {
+            log.Printf("🗑️ Auto Delete Trial: Selesai. Menghapus %d akun trial expired.", countDeleted)
+        }
+    }
+}
 
 // performLockAction: Hapus Sementara (Simpan data -> Delete API)
 func performLockAction(bot *tgbotapi.BotAPI, chatID int64, username string, config *BotConfig) {
@@ -579,8 +686,8 @@ func showLockMenu(bot *tgbotapi.BotAPI, chatID int64) {
     msg := tgbotapi.NewMessage(chatID, "🔒 「 MANAJEMEN LOCK/UNLOCK 」")
     msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
         tgbotapi.NewInlineKeyboardRow(
-            tgbotapi.NewInlineKeyboardButtonData("🔒 Lock User", "menu_lock_user"),
-            tgbotapi.NewInlineKeyboardButtonData("🔓 Unlock User", "menu_unlock_user"),
+            tgbotapi.NewInlineKeyboardButtonData("🔒 Lock", "menu_lock_user"),
+            tgbotapi.NewInlineKeyboardButtonData("🔓 Unlock", "menu_unlock_user"),
         ),
         tgbotapi.NewInlineKeyboardRow(
             tgbotapi.NewInlineKeyboardButtonData("❌ Batal", "cancel"),
@@ -634,7 +741,6 @@ func handleQuickCreate(bot *tgbotapi.BotAPI, chatID int64, userID int64, days in
         b[i] = charset[rand.Intn(len(charset))]
     }
     randomSuffix := string(b)
-
     password := fmt.Sprintf("viip%dday%s", days, randomSuffix)
 
     now := time.Now()
@@ -662,6 +768,78 @@ func handleQuickCreate(bot *tgbotapi.BotAPI, chatID int64, userID int64, days in
         replyError(bot, chatID, fmt.Sprintf("Gagal: %s", res["message"]))
     }
 }
+
+// ==========================================
+// SUBMENU HELPERS
+// ==========================================
+
+func showAccountMenu(bot *tgbotapi.BotAPI, chatID int64) {
+    msg := tgbotapi.NewMessage(chatID, "👤 「 MANAJEMEN AKUN 」")
+    msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+        tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonData("➕ Create", "menu_create"),
+            tgbotapi.NewInlineKeyboardButtonData("🗑️ Delete", "menu_delete"),
+        ),
+        tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonData("🔄 Renew", "menu_renew"),
+            tgbotapi.NewInlineKeyboardButtonData("📋 List", "menu_list"),
+        ),
+        tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonData("🔒 Lock/Unlock", "menu_lock_mgmt"),
+        ),
+        tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonData("❌ Kembali", "cancel"),
+        ),
+    )
+    sendAndTrack(bot, msg)
+}
+
+func showSystemMenu(bot *tgbotapi.BotAPI, chatID int64) {
+    msg := tgbotapi.NewMessage(chatID, "⚙️ 「 PENGATURAN SISTEM 」")
+    msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+        tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonData("ℹ️ Info Server", "menu_info"),
+            tgbotapi.NewInlineKeyboardButtonData("🧹 Cleanup", "menu_cleanup"),
+        ),
+        tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonData("💾 Backup", "menu_backup_restore"),
+            tgbotapi.NewInlineKeyboardButtonData("⏳ VPS Exp", "menu_set_vps_exp"),
+        ),
+        tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonData("💰 Set Donasi", "menu_set_donasi"),
+        ),
+        tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonData("❌ Kembali", "cancel"),
+        ),
+    )
+    sendAndTrack(bot, msg)
+}
+
+func showQuickCreateMenu(bot *tgbotapi.BotAPI, chatID int64) {
+    msg := tgbotapi.NewMessage(chatID, "⚡ 「 QUICK CREATE VIP 」")
+    msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+        tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonData("⚡ 1 Hari", "quick_create:1"),
+            tgbotapi.NewInlineKeyboardButtonData("⚡ 15 Hari", "quick_create:15"),
+            tgbotapi.NewInlineKeyboardButtonData("⚡ 30 Hari", "quick_create:30"),
+        ),
+        tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonData("⚡ 60 Hari", "quick_create:60"),
+            tgbotapi.NewInlineKeyboardButtonData("⚡ 90 Hari", "quick_create:90"),
+        ),
+        tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonData("🆓 Trial 10m", "menu_trial"),
+        ),
+        tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonData("❌ Kembali", "cancel"),
+        ),
+    )
+    sendAndTrack(bot, msg)
+}
+
+// ==========================================
+// LOGIC UTAMA
+// ==========================================
 
 func startCreateUser(bot *tgbotapi.BotAPI, chatID int64, userID int64, config *BotConfig) {
     if config.Mode == "public" && userID != config.AdminID {
@@ -1207,6 +1385,10 @@ func startAutoBackupScheduler(bot *tgbotapi.BotAPI, adminID int64) {
     }
 }
 
+// ==========================================
+// FITUR BARU: Auto Expired Account Scheduler (Jam 00:01)
+// ==========================================
+
 func performAutoCleanup(bot *tgbotapi.BotAPI, adminID int64) {
     log.Println("🧹 Menjalankan pembersihan akun expired otomatis...")
 
@@ -1305,13 +1487,13 @@ func processRestoreFile(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, config *Bot
 
     for _, f := range zipReader.File {
         validFiles := map[string]bool{
-            "config.json":        true,
-            "users.json":         true,
-            "bot-config.json":    true,
-            "domain":             true,
-            "apikey":             true,
-            "public_usage.json":  true,
-            "vps_expired":        true,
+            "config.json":       true,
+            "users.json":        true,
+            "bot-config.json":   true,
+            "domain":            true,
+            "apikey":            true,
+            "public_usage.json": true,
+            "vps_expired":       true,
             "donation_data.json": true,
             "locked_users.json":  true,
         }
@@ -1348,88 +1530,6 @@ func processRestoreFile(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, config *Bot
     }()
 
     showMainMenu(bot, chatID, config)
-}
-
-// ==========================================
-// SUBMENU HELPERS (AGAR TAMPILAN RAPI)
-// ==========================================
-
-// showQuickCreateMenu menampilkan pilihan durasi untuk pembuatan akun instan
-func showQuickCreateMenu(bot *tgbotapi.BotAPI, chatID int64) {
-    msgText := "⚡ 「 QUICK CREATE VIP 」\n\nPilih durasi akun:"
-    msg := tgbotapi.NewMessage(chatID, msgText)
-    msg.ParseMode = "Markdown"
-    msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
-        tgbotapi.NewInlineKeyboardRow(
-            tgbotapi.NewInlineKeyboardButtonData("⚡1 Hari", "quick_create:1"),
-            tgbotapi.NewInlineKeyboardButtonData("⚡7 Hari", "quick_create:7"),
-        ),
-        tgbotapi.NewInlineKeyboardRow(
-            tgbotapi.NewInlineKeyboardButtonData("⚡15 Hari", "quick_create:15"),
-            tgbotapi.NewInlineKeyboardButtonData("⚡30 Hari", "quick_create:30"),
-        ),
-        tgbotapi.NewInlineKeyboardRow(
-            tgbotapi.NewInlineKeyboardButtonData("⚡60 Hari", "quick_create:60"),
-            tgbotapi.NewInlineKeyboardButtonData("⚡90 Hari", "quick_create:90"),
-        ),
-        tgbotapi.NewInlineKeyboardRow(
-            tgbotapi.NewInlineKeyboardButtonData("⬅️ Kembali", "cancel"),
-        ),
-    )
-    sendAndTrack(bot, msg)
-}
-
-// showAccountMenu menampilkan fitur CRUD user
-func showAccountMenu(bot *tgbotapi.BotAPI, chatID int64) {
-    msgText := "👤 「 MANAJEMEN AKUN 」\n\nSilakan pilih aksi:"
-    msg := tgbotapi.NewMessage(chatID, msgText)
-    msg.ParseMode = "Markdown"
-    msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
-        tgbotapi.NewInlineKeyboardRow(
-            tgbotapi.NewInlineKeyboardButtonData("➕ Create User", "menu_create"),
-            tgbotapi.NewInlineKeyboardButtonData("🔄 Renew User", "menu_renew"),
-        ),
-        tgbotapi.NewInlineKeyboardRow(
-            tgbotapi.NewInlineKeyboardButtonData("🗑️ Delete User", "menu_delete"),
-            tgbotapi.NewInlineKeyboardButtonData("📋 List User", "menu_list"),
-        ),
-        tgbotapi.NewInlineKeyboardRow(
-            tgbotapi.NewInlineKeyboardButtonData("🔒 Lock/Unlock", "menu_lock_mgmt"),
-        ),
-        tgbotapi.NewInlineKeyboardRow(
-            tgbotapi.NewInlineKeyboardButtonData("⬅️ Kembali", "cancel"),
-        ),
-    )
-    sendAndTrack(bot, msg)
-}
-
-// showServerMenu menampilkan pengaturan server dan info
-func showServerMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
-    modeLabel := "🔒 Mode Private"
-    if config.Mode == "public" {
-        modeLabel = "🌍 Mode Public"
-    }
-
-    msgText := "⚙️ 「 SERVER SETTINGS 」\n\nKonfigurasi dan Info:"
-    msg := tgbotapi.NewMessage(chatID, msgText)
-    msg.ParseMode = "Markdown"
-    msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
-        tgbotapi.NewInlineKeyboardRow(
-            tgbotapi.NewInlineKeyboardButtonData("📊 System Info", "menu_info"),
-            tgbotapi.NewInlineKeyboardButtonData("💾 Backup/Restore", "menu_backup_restore"),
-        ),
-        tgbotapi.NewInlineKeyboardRow(
-            tgbotapi.NewInlineKeyboardButtonData("⏳ Set VPS Exp", "menu_set_vps_exp"),
-            tgbotapi.NewInlineKeyboardButtonData("💰 Set Donation", "menu_set_donasi"),
-        ),
-        tgbotapi.NewInlineKeyboardRow(
-            tgbotapi.NewInlineKeyboardButtonData(modeLabel, "toggle_mode"),
-        ),
-        tgbotapi.NewInlineKeyboardRow(
-            tgbotapi.NewInlineKeyboardButtonData("⬅️ Kembali", "cancel"),
-        ),
-    )
-    sendAndTrack(bot, msg)
 }
 
 // ==========================================
@@ -1499,7 +1599,7 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
     donationAmount := formatRupiah(donationData.Collected)
 
     msgText := fmt.Sprintf(
-            "┏━━━━━━━━━━━━━━━━━━━━━━┓\n"+
+        "┏━━━━━━━━━━━━━━━━━━━━━━┓\n"+
             "┃ 🤖 RISWAN ZIVPN UDP BOT\n"+
             "┗━━━━━━━━━━━━━━━━━━━━━━┛\n"+
             "┏━━ 📍 INFORMASI SERVER ━━┓\n"+
@@ -1543,28 +1643,38 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
     }
 }
 
-func getMainMenuKeyboard(config *BotConfig, chatID int64) tgbotapi.NewInlineKeyboardMarkup {
+func getMainMenuKeyboard(config *BotConfig, chatID int64) tgbotapi.InlineKeyboardMarkup {
     userID := chatID
 
     if userID == config.AdminID {
-        // MENU UTAMA ADMIN (SUDAH DIRAPIHKAN)
+        modeLabel := "🔒 Private"
+        if config.Mode == "public" {
+            modeLabel = "🌍 Public"
+        }
+
         rows := [][]tgbotapi.InlineKeyboardButton{
+            // TOMBOL UTAMA (SUBMENU)
             tgbotapi.NewInlineKeyboardRow(
                 tgbotapi.NewInlineKeyboardButtonData("⚡ Quick Create", "menu_quick_create"),
             ),
             tgbotapi.NewInlineKeyboardRow(
-                tgbotapi.NewInlineKeyboardButtonData("👤 Manage Accounts", "menu_account_mgmt"),
+                tgbotapi.NewInlineKeyboardButtonData("👤 Manajemen Akun", "menu_account_mgmt"),
             ),
             tgbotapi.NewInlineKeyboardRow(
-                tgbotapi.NewInlineKeyboardButtonData("⚙️ Server Settings", "menu_server_settings"),
+                tgbotapi.NewInlineKeyboardButtonData("⚙️ Pengaturan Sistem", "menu_system_settings"),
+            ),
+            tgbotapi.NewInlineKeyboardRow(
+                tgbotapi.NewInlineKeyboardButtonData(modeLabel, "toggle_mode"),
             ),
         }
 
         return tgbotapi.NewInlineKeyboardMarkup(rows...)
     }
 
-    // MENU USER (STANDAR)
     rows := [][]tgbotapi.InlineKeyboardButton{
+        tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonData("🆓 Trial 10m", "menu_trial"),
+        ),
         tgbotapi.NewInlineKeyboardRow(
             tgbotapi.NewInlineKeyboardButtonData("👤 Create Pass", "menu_create"),
         ),
@@ -1593,7 +1703,7 @@ func sendAccountInfo(bot *tgbotapi.BotAPI, chatID int64, data map[string]interfa
     }
 
     msg := fmt.Sprintf(
-            "╭━━━「 ✅ ACCOUNT DETAILS 」━━━╮\n"+
+        "╭━━━「 ✅ ACCOUNT DETAILS 」━━━╮\n"+
             "┃\n"+
             "┃ 🔑 Pass : `%s`\n"+
             "┃ 🌐 Domain  : `%s`\n"+
@@ -1840,7 +1950,6 @@ func savePublicUsage(userID int64) error {
     return ioutil.WriteFile(PublicUsageFile, jsonData, 0644)
 }
 
-// Helpers untuk Locked Users
 func loadLockedUsers() (map[string]LockedUser, error) {
     data := make(map[string]LockedUser)
     file, err := ioutil.ReadFile(LockedUsersFile)
