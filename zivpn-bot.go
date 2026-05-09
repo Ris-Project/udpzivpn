@@ -456,7 +456,7 @@ func createTrialAccount(bot *tgbotapi.BotAPI, chatID int64, userID int64, config
     username := generateRandomString(6)
     
     // Durasi 0.5 hari = 30 menit (asumsi API support float)
-    trialDuration := 0.5
+    trialDuration := 0
 
     res, err := apiCall("POST", "/user/create", map[string]interface{}{
         "password": username,
