@@ -122,7 +122,7 @@ func main() {
     // Scheduler Backup setiap 4 jam
     go startAutoBackupScheduler(bot, config.AdminID)
 
-    // Scheduler Auto Expired setiap 5 MENIT (Realtime)
+    // Scheduler Auto Expired setiap hari jam 00:01
     go startExpiredAccountScheduler(bot, config.AdminID)
 
     u := tgbotapi.NewUpdate(0)
@@ -443,6 +443,9 @@ func generateRandomString(length int) string {
 
 // FITUR BARU: Create Trial Account (30 Menit)
 func createTrialAccount(bot *tgbotapi.BotAPI, chatID int64, userID int64, config *BotConfig) {
+    // Jika mode public, kita bisa check cooldown disini jika mau
+    // Untuk sekarang kita biarkan bebas (bypass cooldown) agar user bisa test koneksi
+    
     loadingMsg := tgbotapi.NewMessage(chatID, "⏳ Membuat Akun Trial (30 Menit)...")
     sentMsg, _ := bot.Send(loadingMsg)
 
@@ -451,16 +454,13 @@ func createTrialAccount(bot *tgbotapi.BotAPI, chatID int64, userID int64, config
 
     // Generate username random
     username := generateRandomString(6)
+    
+    // Durasi 0.5 hari = 30 menit (asumsi API support float)
+    trialDuration := 0
 
-    // Hitung waktu expired 30 menit dari sekarang
-    now := time.Now()
-    expireTime := now.Add(30 * time.Minute)
-
-    // Kirim ke API: days=0 (diabaikan jika ada timestamp) + expire=timestamp
     res, err := apiCall("POST", "/user/create", map[string]interface{}{
         "password": username,
-        "days":     0,
-        "expire":   expireTime.Unix(), // KIRIM TIMESTAMP AGAR PRECISE
+        "days":     trialDuration,
     })
 
     stopAnim <- true
@@ -825,7 +825,7 @@ func parseUserExpiry(dateStr string) (time.Time, error) {
     return time.Time{}, err
 }
 
-// UBAH: Fungsi listUsers sekarang mendukung pagination 100 per halaman & Display Logic
+// UBAH: Fungsi listUsers sekarang mendukung pagination 100 per halaman
 func listUsers(bot *tgbotapi.BotAPI, chatID int64, page int) {
     res, err := apiCall("GET", "/users", nil)
     if err != nil {
@@ -864,36 +864,7 @@ func listUsers(bot *tgbotapi.BotAPI, chatID int64, page int) {
             if user["status"] == "Expired" {
                 status = "🔴"
             }
-
-            // LOGIKA TAMPILAN LIST
-            username := user["password"].(string)
-            var expDisplay string
-
-            if strings.HasPrefix(username, "TRIAL-") {
-                // Trial: Tampilkan menit atau status
-                expStr := user["expired"].(string)
-                expTime, _ := time.Parse("2006-01-02 15:04:05", expStr)
-                if user["status"] == "Expired" {
-                    expDisplay = "Expired"
-                } else {
-                    duration := expTime.Sub(time.Now())
-                    if duration.Minutes() > 0 {
-                        expDisplay = fmt.Sprintf("%d Menit", int(duration.Minutes()))
-                    } else {
-                        expDisplay = "Expired"
-                    }
-                }
-            } else {
-                // Biasa: Tanggal saja
-                expStr := user["expired"].(string)
-                if len(expStr) >= 10 {
-                    expDisplay = expStr[:10]
-                } else {
-                    expDisplay = expStr
-                }
-            }
-
-            msg += fmt.Sprintf("%s `%s` ⌛ %s\n", status, username, expDisplay)
+            msg += fmt.Sprintf("%s `%s` ⌛ %s\n", status, user["password"], user["expired"])
         }
 
         // Membuat tombol navigasi
@@ -1080,16 +1051,25 @@ func startAutoBackupScheduler(bot *tgbotapi.BotAPI, adminID int64) {
 }
 
 // ==========================================
-// FITUR BARU: Auto Expired Account Scheduler (Tiap 5 Menit)
+// FITUR BARU: Auto Expired Account Scheduler (Setiap Jam 00:01)
 // ==========================================
 func startExpiredAccountScheduler(bot *tgbotapi.BotAPI, adminID int64) {
-    // Ubah interval jadi 5 menit agar trial cepat bersih
-    ticker := time.NewTicker(5 * time.Minute)
-    defer ticker.Stop()
+    for {
+        now := time.Now()
+        // Hitung waktu jam 00:01 hari ini
+        nextRun := time.Date(now.Year(), now.Month(), now.Day(), 0, 1, 0, 0, now.Location())
 
-    log.Printf("⏰ Auto Cleanup Scheduler dimulai (tiap 5 menit). Target Admin ID: %d", adminID)
+        // Jika sekarang sudah lewat jam 00:01, jadwalkan untuk besok
+        if now.After(nextRun) {
+            nextRun = nextRun.Add(24 * time.Hour)
+        }
 
-    for range ticker.C {
+        waitDuration := nextRun.Sub(now)
+        log.Printf("⏰ Scheduler Expired Akun: Berjalan dalam %v (pada %s)", waitDuration, nextRun.Format("2006-01-02 15:04:05"))
+
+        // Tunggu hingga waktunya tiba
+        time.Sleep(waitDuration)
+
         log.Println("🧹 Menjalankan pembersihan akun expired otomatis...")
 
         // Panggil API Cleanup
@@ -1097,16 +1077,14 @@ func startExpiredAccountScheduler(bot *tgbotapi.BotAPI, adminID int64) {
 
         if err != nil {
             log.Printf("Error Auto Cleanup: %v", err)
-            // Jangan kirim error ke admin tiap 5 menit, biarkan log saja agar tidak spam
+            msg := tgbotapi.NewMessage(adminID, fmt.Sprintf("❌ Error Auto Cleanup: %v", err))
+            bot.Send(msg)
             continue
         }
 
         if res["success"] == true {
             if data, ok := res["data"].(map[string]interface{}); ok {
                 count := int(data["deleted_count"].(float64))
-
-                // HANYA kirim report ke admin jika ADA yang dihapus
-                // Agar admin tidak di-spam pesan kosong tiap 5 menit
                 if count > 0 {
                     deletedUsers := data["deleted_users"].([]interface{})
                     var userList string
@@ -1117,7 +1095,6 @@ func startExpiredAccountScheduler(bot *tgbotapi.BotAPI, adminID int64) {
                     msg := tgbotapi.NewMessage(adminID, msgText)
                     msg.ParseMode = "Markdown"
                     bot.Send(msg)
-                    log.Printf("Auto Cleanup: %d akun dihapus.", count)
                 } else {
                     log.Println("Auto Cleanup: Tidak ada akun expired.")
                 }
@@ -1388,43 +1365,11 @@ func getMainMenuKeyboard(config *BotConfig, chatID int64) tgbotapi.InlineKeyboar
     return tgbotapi.NewInlineKeyboardMarkup(rows...)
 }
 
-// UBAH: sendAccountInfo dengan logic display menit/tanggal
 func sendAccountInfo(bot *tgbotapi.BotAPI, chatID int64, data map[string]interface{}, config *BotConfig) {
     ipInfo, _ := getIpInfo()
     domain := config.Domain
     if domain == "" {
         domain = "(Not Configured)"
-    }
-
-    username := data["password"].(string)
-
-    // LOGIKA TAMPILAN EXPIRED
-    var expiredDisplay string
-
-    if strings.HasPrefix(username, "TRIAL-") {
-        // Untuk Trial: Hitung sisa menit
-        expStr := data["expired"].(string)
-        expTime, err := time.Parse("2006-01-02 15:04:05", expStr)
-
-        if err == nil {
-            duration := expTime.Sub(time.Now())
-            if duration.Minutes() > 0 {
-                expiredDisplay = fmt.Sprintf("%d Menit", int(duration.Minutes()))
-            } else {
-                expiredDisplay = "Expired"
-            }
-        } else {
-            expiredDisplay = expStr // Fallback jika format tanggal aneh
-        }
-    } else {
-        // Untuk Bukan Trial: Tampilkan Tanggal saja
-        // Kita potong bagian jam agar hanya tanggal (YYYY-MM-DD) yang muncul
-        expStr := data["expired"].(string)
-        if len(expStr) >= 10 {
-            expiredDisplay = expStr[:10] // Ambil 10 karakter pertama (YYYY-MM-DD)
-        } else {
-            expiredDisplay = expStr
-        }
     }
 
     msg := fmt.Sprintf(
@@ -1441,9 +1386,9 @@ func sendAccountInfo(bot *tgbotapi.BotAPI, chatID int64, data map[string]interfa
             "┃ 📡 ISP : `%s`\n"+
             "┃\n"+
             "╰━━「 ⚡ Selamat Menggunakan 」━━╯",
-        username,
+        data["password"],
         domain,
-        expiredDisplay, // Gunakan variabel display yang sudah diolah
+        data["expired"],
         ipInfo.City,
         ipInfo.Isp,
     )
@@ -1732,4 +1677,4 @@ func getUsers() ([]UserData, error) {
     dataBytes, _ := json.Marshal(res["data"])
     json.Unmarshal(dataBytes, &users)
     return users, nil
-}
+} perbaiki

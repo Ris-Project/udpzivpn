@@ -38,6 +38,7 @@ type Config struct {
 type UserRequest struct {
     Password string `json:"password"`
     Days     int    `json:"days"`
+    Expire   int64  `json:"expire"` // TAMBAHKAN INI
 }
 
 type UserStore struct {
@@ -468,7 +469,11 @@ func cleanupExpired(w http.ResponseWriter, r *http.Request) {
     }
 
     if len(expiredPasswords) == 0 {
-        jsonResponse(w, http.StatusOK, true, "Tidak ada akun expired", nil)
+        // KEMBALIKAN DATA KOSONG SESUAI FORMAT YANG DIBUTUHKAN BOT
+        jsonResponse(w, http.StatusOK, true, "Tidak ada akun expired", map[string]interface{}{
+            "deleted_count": 0,
+            "deleted_users": []string{},
+        })
         return
     }
 
@@ -495,10 +500,21 @@ func cleanupExpired(w http.ResponseWriter, r *http.Request) {
 
     restartService()
 
-    jsonResponse(w, http.StatusOK, true,
-        fmt.Sprintf("Berhasil menghapus %d akun expired", len(expiredPasswords)), nil)
-}
+    // SIAPKAN LIST USER YANG DIHAPUS UNTUK LAPORAN
+    deletedList := make([]string, 0, len(expiredPasswords))
+    for pwd := range expiredPasswords {
+        deletedList = append(deletedList, pwd)
+    }
 
+    // KEMBALIKAN DATA JSON YANG BENAR
+    jsonResponse(w, http.StatusOK, true,
+        fmt.Sprintf("Berhasil menghapus %d akun expired", len(expiredPasswords)), 
+        map[string]interface{}{
+            "deleted_count": len(expiredPasswords),
+            "deleted_users": deletedList,
+        },
+    )
+}
 func revokeAccess(password string) {
     mutex.Lock()
     defer mutex.Unlock()
