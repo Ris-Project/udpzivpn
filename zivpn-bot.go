@@ -131,10 +131,10 @@ func main() {
     // Scheduler Backup setiap 4 jam
     go startAutoBackupScheduler(bot, config.AdminID)
 
-    // Scheduler Auto Expired setiap hari jam 00:01
+    // Scheduler Auto Expired (Akun Reguler) setiap hari jam 00:01
     go startExpiredAccountScheduler(bot, config.AdminID)
 
-    // Scheduler Auto Delete Trial setiap 1 Menit
+    // Scheduler Auto Delete Trial (Akun Trial) setiap 1 menit
     go startTrialCleanupScheduler(bot)
 
     u := tgbotapi.NewUpdate(0)
@@ -389,7 +389,8 @@ func handleState(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, state string, conf
                 savePublicUsage(userID)
             }
             data := res["data"].(map[string]interface{})
-            sendAccountInfo(bot, chatID, data, config)
+            // Parameter "NEW" untuk tampilan akun baru
+            sendAccountInfo(bot, chatID, data, config, "NEW")
         } else {
             replyError(bot, chatID, fmt.Sprintf("Gagal: %s", res["message"]))
             showMainMenu(bot, chatID, config)
@@ -427,7 +428,8 @@ func handleState(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, state string, conf
 
         if res["success"] == true {
             data := res["data"].(map[string]interface{})
-            sendAccountInfo(bot, chatID, data, config)
+            // Parameter "RENEW" untuk tampilan akun diperpanjang
+            sendAccountInfo(bot, chatID, data, config, "RENEW")
         } else {
             replyError(bot, chatID, fmt.Sprintf("Gagal: %s", res["message"]))
             showMainMenu(bot, chatID, config)
@@ -524,7 +526,8 @@ func handleTrialCreate(bot *tgbotapi.BotAPI, chatID int64, userID int64, config 
     randomSuffix := string(b)
     password := fmt.Sprintf("%s%s", TrialPrefix, randomSuffix)
 
-    // Set expired 10 menit dari sekarang
+    // Logika Trial: TIDAK menggunakan tanggal (perhitungan hari), tetapi perhitungan relatif menit.
+    // now.Add(10 * time.Minute) akan menghitung 10 menit dari detik ini.
     now := time.Now()
     targetExpireTime := now.Add(10 * time.Minute)
 
@@ -547,7 +550,8 @@ func handleTrialCreate(bot *tgbotapi.BotAPI, chatID int64, userID int64, config 
             savePublicUsage(userID)
         }
         data := res["data"].(map[string]interface{})
-        sendAccountInfo(bot, chatID, data, config)
+        // Parameter "TRIAL" untuk tampilan akun trial
+        sendAccountInfo(bot, chatID, data, config, "TRIAL")
     } else {
         replyError(bot, chatID, fmt.Sprintf("Gagal: %s", res["message"]))
     }
@@ -571,15 +575,17 @@ func startTrialCleanupScheduler(bot *tgbotapi.BotAPI) {
         now := time.Now()
 
         for _, u := range users {
-            // Cek apakah user merupakan akun Trial (berdasarkan prefix)
+            // Cek apakah user merupakan akun Trial (berdasarkan prefix TRIAL-)
             if strings.HasPrefix(u.Password, TrialPrefix) {
+                // Parsing waktu expired user
                 expTime, err := parseUserExpiry(u.Expired)
                 if err != nil {
                     continue
                 }
 
-                // Jika waktu sekarang sudah lewat dari waktu expired
+                // Jika waktu sekarang sudah lewat dari waktu expired (Akun mati)
                 if now.After(expTime) {
+                    // Hapus akun melalui API
                     _, delErr := apiCall("POST", "/user/delete", map[string]interface{}{"password": u.Password})
                     if delErr == nil {
                         countDeleted++
@@ -670,6 +676,13 @@ func performUnlockAction(bot *tgbotapi.BotAPI, chatID int64, username string, co
 
     if res["success"] == true {
         deleteLockedUser(username)
+
+        // Karena akun dipulihkan, kita anggap statusnya seperti "BARU" kembali
+        data := map[string]interface{}{
+            "password": username,
+            "expired":  lockedUser.Expired,
+        }
+        sendAccountInfo(bot, chatID, data, config, "NEW")
 
         msg := fmt.Sprintf("✅ Akun `%s` berhasil DIBUKAK KEMBALI.\n⏳ Masa aktif kembali hingga: %s", username, lockedUser.Expired)
         reply := tgbotapi.NewMessage(chatID, msg)
@@ -767,7 +780,8 @@ func handleQuickCreate(bot *tgbotapi.BotAPI, chatID int64, userID int64, days in
 
     if res["success"] == true {
         data := res["data"].(map[string]interface{})
-        sendAccountInfo(bot, chatID, data, config)
+        // Parameter "NEW" untuk tampilan akun baru VIP
+        sendAccountInfo(bot, chatID, data, config, "NEW")
     } else {
         replyError(bot, chatID, fmt.Sprintf("Gagal: %s", res["message"]))
     }
@@ -1633,7 +1647,7 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
     donationAmount := formatRupiah(donationData.Collected)
 
     msgText := fmt.Sprintf(
-            "┏━━━━━━━━━━━━━━━━━━━━━┓\n"+
+        "┏━━━━━━━━━━━━━━━━━━━━━┓\n"+
             "┃ 🤖 RISWAN ZIVPN UDP BOT\n"+
             "┗━━━━━━━━━━━━━━━━━━━━━┛\n"+
             "┏━━━ 📍 INFORMASI SERVER ━━━┓\n"+
@@ -1731,33 +1745,90 @@ func getMainMenuKeyboard(config *BotConfig, chatID int64) tgbotapi.InlineKeyboar
     return tgbotapi.NewInlineKeyboardMarkup(rows...)
 }
 
-func sendAccountInfo(bot *tgbotapi.BotAPI, chatID int64, data map[string]interface{}, config *BotConfig) {
+// sendAccountInfo menampilkan detail akun berdasarkan tipe (NEW, RENEW, TRIAL)
+func sendAccountInfo(bot *tgbotapi.BotAPI, chatID int64, data map[string]interface{}, config *BotConfig, msgType string) {
     ipInfo, _ := getIpInfo()
     domain := config.Domain
     if domain == "" {
         domain = "(Not Configured)"
     }
 
-    msg := fmt.Sprintf(
-            "╭───「 ✅ ACCOUNT DETAILS 」───╮\n"+
-            "│\n"+
-            "│ 🔑 Pass : `%s`\n"+
-            "│ 🌐 Domain  : `%s`\n"+
-            "│ 📅 Expired  : `%s`\n"+
-            "│ 📱 Max Device : 2 Device\n"+
-            "│ 📦 limit Kuota  : Unlimited\n"+
-            "│\n"+
-            "╠───「 🌍 INFO SERVER 」───╣\n"+
-            "│ 🏙️ City : `%s`\n"+
-            "│ 📡 ISP : `%s`\n"+
-            "│\n"+
-            "╰───「 ⚡ Selamat Menggunakan 」───╯",
-        data["password"],
-        domain,
-        data["expired"],
-        ipInfo.City,
-        ipInfo.Isp,
-    )
+    var msg string
+    username := fmt.Sprintf("%v", data["password"])
+
+    // Menentukan Header berdasarkan tipe pesan
+    if msgType == "RENEW" {
+        // --- FORMAT KHUSUS UNTUK RENEW ---
+        msg = fmt.Sprintf(
+                "╭───「 🔄 ACCOUNT RENEWED 」───╮\n"+
+                "│\n"+
+                "│ ✅ Akun berhasil diperpanjang!\n"+
+                "│ 🔑 Pass : `%s`\n"+
+                "│ 🌐 Domain  : `%s`\n"+
+                "│ 📅 Expired  : `%s`\n"+
+                "│ 📱 Max Device : 2 Device\n"+
+                "│ 📦 limit Kuota  : Unlimited\n"+
+                "│\n"+
+                "╠───「 🌍 INFO SERVER 」───╣\n"+
+                "│ 🏙️ City : `%s`\n"+
+                "│ 📡 ISP : `%s`\n"+
+                "│\n"+
+                "╰───「 ⚡ Selamat Menggunakan 」──╯",
+            data["password"],
+            domain,
+            data["expired"],
+            ipInfo.City,
+            ipInfo.Isp,
+        )
+    } else if strings.HasPrefix(username, TrialPrefix) || msgType == "TRIAL" {
+        // --- FORMAT KHUSUS UNTUK TRIAL ---
+        msg = fmt.Sprintf(
+                "╭───「 🆓 TRIAL  ACCOUNT 」───╮\n"+
+                "│\n"+
+                "│ 🔑 Pass : `%s`\n"+
+                "│ 🌐 Domain  : `%s`\n"+
+                "│ 📅 Expired  : `%s`\n"+
+                "│ 📱 Max Device : 2 Device\n"+
+                "│ 📦 limit Kuota  : Unlimited\n"+
+                "│\n"+
+                "│ ⚠️ PERHATIAN:\n"+
+                "│ Ini adalah akun TRIAL 10 Menit.\n"+
+                "│ Gunakan untuk tes koneksi server.\n"+
+                "│\n"+
+                "╠───「 🌍 INFO SERVER 」───╣\n"+
+                "│ 🏙️ City : `%s`\n"+
+                "│ 📡 ISP : `%s`\n"+
+                "│\n"+
+                "╰───「 ⚡ Selamat Mencoba 」───╯",
+            data["password"],
+            domain,
+            data["expired"],
+            ipInfo.City,
+            ipInfo.Isp,
+        )
+    } else {
+        // --- FORMAT STANDAR UNTUK VIP/REGULER ---
+        msg = fmt.Sprintf(
+                "╭───「 ✅ ACCOUNT DETAILS 」───╮\n"+
+                "│\n"+
+                "│ 🔑 Pass : `%s`\n"+
+                "│ 🌐 Domain  : `%s`\n"+
+                "│ 📅 Expired  : `%s`\n"+
+                "│ 📱 Max Device : 2 Device\n"+
+                "│ 📦 limit Kuota  : Unlimited\n"+
+                "│\n"+
+                "╠───「 🌍 INFO SERVER 」───╣\n"+
+                "│ 🏙️ City : `%s`\n"+
+                "│ 📡 ISP : `%s`\n"+
+                "│\n"+
+                "╰──「 ⚡ Selamat Menggunakan 」──╯",
+            data["password"],
+            domain,
+            data["expired"],
+            ipInfo.City,
+            ipInfo.Isp,
+        )
+    }
 
     reply := tgbotapi.NewMessage(chatID, msg)
     reply.ParseMode = "Markdown"
