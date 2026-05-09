@@ -523,16 +523,16 @@ func handleTrialCreate(bot *tgbotapi.BotAPI, chatID int64, userID int64, config 
 
         // Send message with specific notice for trial
         msg := fmt.Sprintf(
-                "╭━━━「 🧪 TRIAL ACCOUNT 」━━━╮\n"+
+            "╭━━━「 🧪 TRIAL ACCOUNT 」━━━╮\n"+
                 "┃\n"+
                 "┃ 🔑 Pass : `%s`\n"+
                 "┃ 🌐 Domain  : `%s`\n"+
                 "┃ ⏳ Expired : 10 Menit dari sekarang\n"+
                 "┃\n"+
                 "┃ ⚠️ Akun ini akan dihapus otomatis\n"+
-                "┃ 👉 setelah masa aktif habis.\n"+
+                "┃    setelah masa aktif habis.\n"+
                 "┃\n"+
-                "╰━━「 Selamat Mencoba 」━━━━━╯",
+                "╰━━「 Selamat Mencoba 」━━╯",
             data["password"],
             config.Domain,
         )
