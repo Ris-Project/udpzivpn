@@ -4,23 +4,22 @@ import (
     "encoding/json"
     "flag"
     "fmt"
+    "io/ioutil"
     "log"
     "net/http"
     "os"
     "os/exec"
-    "sort"
-    "strconv"
     "strings"
     "sync"
     "time"
 )
 
 const (
-    ConfigFile  = "/etc/zivpn/config.json"
-    UserDB      = "/etc/zivpn/users.json"
-    DomainFile  = "/etc/zivpn/domain"
-    ApiKeyFile  = "/etc/zivpn/apikey"
-    ApiPortFile = "/etc/zivpn/api_port" // Tambah konstanta untuk port
+    ConfigFile = "/etc/zivpn/config.json"
+    UserDB     = "/etc/zivpn/users.json"
+    DomainFile = "/etc/zivpn/domain"
+    ApiKeyFile = "/etc/zivpn/apikey"
+    Port       = "/etc/zivpn/api_port"
 )
 
 var AuthToken = "AutoFtBot-agskjgdvsbdreiWG1234512SDKrqw"
@@ -36,9 +35,11 @@ type Config struct {
     } `json:"auth"`
 }
 
+// PERBAIKAN 1: Tambahkan field Expire int64 untuk menerima timestamp dari Bot
 type UserRequest struct {
     Password string `json:"password"`
-    Days     int    `json:"days"`
+    Days     int    `json:"days"`     // Opsional (fallback)
+    Expire   int64  `json:"expire"`   // Timestamp Unix dari Bot
 }
 
 type UserStore struct {
@@ -56,23 +57,13 @@ type Response struct {
 var mutex = &sync.Mutex{}
 
 func main() {
-    // Baca Port dari File API agar sinkron dengan Bot
-    port := 8080 // Default
-    if portBytes, err := os.ReadFile(ApiPortFile); err == nil {
-        if p, err := strconv.Atoi(strings.TrimSpace(string(portBytes))); err == nil {
-            port = p
-        }
-    }
-
-    flag.Int("port", port, "Port to run the API server on")
+    port := flag.Int("port", 8080, "Port to run the API server on")
     flag.Parse()
 
-    // Baca API Key dari file jika ada
-    if keyBytes, err := os.ReadFile(ApiKeyFile); err == nil {
+    if keyBytes, err := ioutil.ReadFile(ApiKeyFile); err == nil {
         AuthToken = strings.TrimSpace(string(keyBytes))
     }
 
-    // Setup Routes
     http.HandleFunc("/api/user/create", authMiddleware(createUser))
     http.HandleFunc("/api/user/delete", authMiddleware(deleteUser))
     http.HandleFunc("/api/user/renew", authMiddleware(renewUser))
@@ -81,16 +72,14 @@ func main() {
     http.HandleFunc("/api/cron/expire", authMiddleware(checkExpiration))
     http.HandleFunc("/api/cron/cleanup", authMiddleware(cleanupExpired))
 
-    log.Printf("✅ API Server started at :%d", port)
-    log.Printf("🔑 Using Auth Token: %s", AuthToken)
-    log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", port), nil))
+    log.Printf("Server started at :%d", *port)
+    log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *port), nil))
 }
 
 func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
         token := r.Header.Get("X-API-Key")
         if token != AuthToken {
-            log.Printf("⛔ Unauthorized access attempt from IP: %s", r.RemoteAddr)
             jsonResponse(w, http.StatusUnauthorized, false, "Unauthorized", nil)
             return
         }
@@ -121,7 +110,13 @@ func createUser(w http.ResponseWriter, r *http.Request) {
     }
 
     if req.Password == "" {
-        jsonResponse(w, http.StatusBadRequest, false, "Password wajib diisi", nil)
+        jsonResponse(w, http.StatusBadRequest, false, "Password harus valid", nil)
+        return
+    }
+    
+    // PERBAIKAN 2: Validasi apakah ada parameter Expire atau Days
+    if req.Expire <= 0 && req.Days <= 0 {
+        jsonResponse(w, http.StatusBadRequest, false, "Harap isi durasi (days) atau tanggal expired (expire)", nil)
         return
     }
 
@@ -134,7 +129,6 @@ func createUser(w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    // Cek duplikasi
     for _, p := range config.Auth.Config {
         if p == req.Password {
             jsonResponse(w, http.StatusConflict, false, "User sudah ada", nil)
@@ -143,19 +137,19 @@ func createUser(w http.ResponseWriter, r *http.Request) {
     }
 
     config.Auth.Config = append(config.Auth.Config, req.Password)
-
     if err := saveConfig(config); err != nil {
         jsonResponse(w, http.StatusInternalServerError, false, "Gagal menyimpan config", nil)
         return
     }
 
-    // Hitung Expired
+    // PERBAIKAN 3: Hitung tanggal berdasarkan timestamp dari Bot, atau fallback ke Days
     var expDate string
-    if req.Days == 0 {
-        // Jika 0, set default trial 30 Menit
-        expDate = time.Now().Add(30 * time.Minute).Format("2006-01-02 15:04:05")
+    if req.Expire > 0 {
+        // Gunakan timestamp dari Bot, dan konversi ke Local Time server
+        expDate = time.Unix(req.Expire, 0).Local().Format("2006-01-02")
     } else {
-        expDate = time.Now().Add(time.Duration(req.Days) * 24 * time.Hour).Format("2006-01-02 15:04:05")
+        // Fallback ke hitungan hari lama
+        expDate = time.Now().Add(time.Duration(req.Days) * 24 * time.Hour).Format("2006-01-02")
     }
 
     users, err := loadUsers()
@@ -169,7 +163,6 @@ func createUser(w http.ResponseWriter, r *http.Request) {
         Expired:  expDate,
         Status:   "active",
     }
-
     users = append(users, newUser)
 
     if err := saveUsers(users); err != nil {
@@ -177,11 +170,13 @@ func createUser(w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    // Restart service asynchronously agar tidak blocking response
-    go restartService()
+    if err := restartService(); err != nil {
+        jsonResponse(w, http.StatusInternalServerError, false, "Gagal merestart service", nil)
+        return
+    }
 
     domain := "Tidak diatur"
-    if domainBytes, err := os.ReadFile(DomainFile); err == nil {
+    if domainBytes, err := ioutil.ReadFile(DomainFile); err == nil {
         domain = strings.TrimSpace(string(domainBytes))
     }
 
@@ -247,15 +242,23 @@ func deleteUser(w http.ResponseWriter, r *http.Request) {
         newUsers = append(newUsers, u)
     }
 
+    if !foundInConfig && !foundInDB {
+        jsonResponse(w, http.StatusNotFound, false, "User tidak ditemukan", nil)
+        return
+    }
+
     if foundInDB {
         if err := saveUsers(newUsers); err != nil {
-            jsonResponse(w, http.StatusInternalServerError, false, "Gagal menyimpan users", nil)
+            jsonResponse(w, http.StatusInternalServerError, false, "Gagal menyimpan database user", nil)
             return
         }
     }
 
     if foundInConfig {
-        go restartService()
+        if err := restartService(); err != nil {
+            jsonResponse(w, http.StatusInternalServerError, false, "Gagal merestart service", nil)
+            return
+        }
     }
 
     jsonResponse(w, http.StatusOK, true, "User berhasil dihapus", nil)
@@ -273,42 +276,54 @@ func renewUser(w http.ResponseWriter, r *http.Request) {
         return
     }
 
+    // PERBAIKAN 4: Validasi renew sama seperti create
+    if req.Expire <= 0 && req.Days <= 0 {
+        jsonResponse(w, http.StatusBadRequest, false, "Harap isi durasi (days) atau tanggal expired (expire)", nil)
+        return
+    }
+
     mutex.Lock()
     defer mutex.Unlock()
 
     users, err := loadUsers()
     if err != nil {
-        jsonResponse(w, http.StatusInternalServerError, false, "Gagal membaca users", nil)
+        jsonResponse(w, http.StatusInternalServerError, false, "Gagal membaca database user", nil)
         return
     }
 
     found := false
     newUsers := []UserStore{}
     var newExpDate string
-    userStatusUpdated := false
 
     for _, u := range users {
         if u.Password == req.Password {
             found = true
+            
+            // PERBAIKAN 5: Gunakan timestamp dari Bot untuk renew jika ada
+            if req.Expire > 0 {
+                newExpDate = time.Unix(req.Expire, 0).Local().Format("2006-01-02")
+            } else {
+                // Logika lama: Tambah hari dari waktu sekarang ATAU expired lama (tergantung kebijakan)
+                // Di sini saya gunakan logika: tambahkan hari dari waktu sekarang (reset counter)
+                // Jika ingin menambah dari expired lama, parsing u.Expired dulu.
+                currentExp, err := time.Parse("2006-01-02", u.Expired)
+                if err != nil {
+                    currentExp = time.Now()
+                }
+                
+                if currentExp.Before(time.Now()) {
+                    currentExp = time.Now()
+                }
 
-            currentExp, err := time.Parse("2006-01-02 15:04:05", u.Expired)
-            if err != nil {
-                currentExp = time.Now()
+                newExp := currentExp.Add(time.Duration(req.Days) * 24 * time.Hour)
+                newExpDate = newExp.Format("2006-01-02")
             }
 
-            // Jika sudah expired, hitung dari sekarang. Jika belum, tambahkan dari tanggal expire
-            if currentExp.Before(time.Now()) {
-                currentExp = time.Now()
-            }
-
-            newExp := currentExp.Add(time.Duration(req.Days) * 24 * time.Hour)
-            newExpDate = newExp.Format("2006-01-02 15:04:05")
             u.Expired = newExpDate
-
-            // Jika user tadinya locked, aktifkan kembali
+            
             if u.Status == "locked" {
                 u.Status = "active"
-                userStatusUpdated = true
+                go enableUser(req.Password)
             }
 
             newUsers = append(newUsers, u)
@@ -318,34 +333,19 @@ func renewUser(w http.ResponseWriter, r *http.Request) {
     }
 
     if !found {
-        jsonResponse(w, http.StatusNotFound, false, "User tidak ditemukan", nil)
+        jsonResponse(w, http.StatusNotFound, false, "User tidak ditemukan di database", nil)
         return
     }
 
     if err := saveUsers(newUsers); err != nil {
-        jsonResponse(w, http.StatusInternalServerError, false, "Gagal menyimpan users", nil)
+        jsonResponse(w, http.StatusInternalServerError, false, "Gagal menyimpan database user", nil)
         return
     }
 
-    // Handle config logic
-    if userStatusUpdated {
-        config, err := loadConfig()
-        if err == nil {
-            userExistsInConfig := false
-            for _, p := range config.Auth.Config {
-                if p == req.Password {
-                    userExistsInConfig = true
-                    break
-                }
-            }
-            if !userExistsInConfig {
-                config.Auth.Config = append(config.Auth.Config, req.Password)
-                saveConfig(config)
-            }
-        }
+    if err := restartService(); err != nil {
+        jsonResponse(w, http.StatusInternalServerError, false, "Gagal merestart service", nil)
+        return
     }
-
-    go restartService()
 
     jsonResponse(w, http.StatusOK, true, "User berhasil diperpanjang", map[string]string{
         "password": req.Password,
@@ -354,9 +354,14 @@ func renewUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func listUsers(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodGet {
+        jsonResponse(w, http.StatusMethodNotAllowed, false, "Method not allowed", nil)
+        return
+    }
+
     users, err := loadUsers()
     if err != nil {
-        jsonResponse(w, http.StatusInternalServerError, false, "Gagal membaca users", nil)
+        jsonResponse(w, http.StatusInternalServerError, false, "Gagal membaca database user", nil)
         return
     }
 
@@ -367,17 +372,16 @@ func listUsers(w http.ResponseWriter, r *http.Request) {
     }
 
     userList := []UserInfo{}
+    today := time.Now().Format("2006-01-02")
+
     for _, u := range users {
         status := "Active"
         if u.Status == "locked" {
             status = "Locked"
-        } else {
-            expTime, err := time.Parse("2006-01-02 15:04:05", u.Expired)
-            if err == nil && time.Now().After(expTime) {
-                status = "Expired"
-            }
+        } else if u.Expired < today { // Jika tanggal expired < hari ini
+            status = "Expired"
         }
-
+        
         userList = append(userList, UserInfo{
             Password: u.Password,
             Expired:  u.Expired,
@@ -396,7 +400,7 @@ func getSystemInfo(w http.ResponseWriter, r *http.Request) {
     ipPriv, _ := cmd.Output()
 
     domain := "Tidak diatur"
-    if domainBytes, err := os.ReadFile(DomainFile); err == nil {
+    if domainBytes, err := ioutil.ReadFile(DomainFile); err == nil {
         domain = strings.TrimSpace(string(domainBytes))
     }
 
@@ -412,15 +416,20 @@ func getSystemInfo(w http.ResponseWriter, r *http.Request) {
 }
 
 func checkExpiration(w http.ResponseWriter, r *http.Request) {
-    mutex.Lock()
-    defer mutex.Unlock()
-
-    users, err := loadUsers()
-    if err != nil {
-        jsonResponse(w, http.StatusInternalServerError, false, "Gagal membaca users", nil)
+    if r.Method != http.MethodPost {
+        jsonResponse(w, http.StatusMethodNotAllowed, false, "Method not allowed", nil)
         return
     }
 
+    users, err := loadUsers()
+    if err != nil {
+        jsonResponse(w, http.StatusInternalServerError, false, "Gagal membaca database user", nil)
+        return
+    }
+
+    today := time.Now().Format("2006-01-02")
+    
+    // Load config to check who is currently active
     config, err := loadConfig()
     if err != nil {
         jsonResponse(w, http.StatusInternalServerError, false, "Gagal membaca config", nil)
@@ -433,44 +442,31 @@ func checkExpiration(w http.ResponseWriter, r *http.Request) {
     }
 
     revokedCount := 0
-    updatedConfig := false
-
     for _, u := range users {
-        // Jika status di DB masih active tapi waktu sudah habis
-        if u.Status != "locked" {
-            expTime, err := time.Parse("2006-01-02 15:04:05", u.Expired)
-            if err == nil && time.Now().After(expTime) && activeUsers[u.Password] {
-                log.Printf("⚠️ User %s expired. Revoking access.\n", u.Password)
-                
-                // Hapus dari config
-                newConfigAuth := []string{}
-                for _, p := range config.Auth.Config {
-                    if p != u.Password {
-                        newConfigAuth = append(newConfigAuth, p)
-                    }
-                }
-                config.Auth.Config = newConfigAuth
-                updatedConfig = true
-                revokedCount++
-            }
+        // PERBAIKAN 6: Gunakan <= agar expired hari ini langsung direvoke
+        if u.Expired <= today && activeUsers[u.Password] {
+            log.Printf("User %s expired (Exp: %s). Revoking access.\n", u.Password, u.Expired)
+            revokeAccess(u.Password)
+            revokedCount++
         }
-    }
-
-    if updatedConfig {
-        saveConfig(config)
-        go restartService()
     }
 
     jsonResponse(w, http.StatusOK, true, fmt.Sprintf("Expiration check complete. Revoked: %d", revokedCount), nil)
 }
 
+// cleanupExpired menghapus semua akun expired dari config.json DAN users.json
 func cleanupExpired(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+        jsonResponse(w, http.StatusMethodNotAllowed, false, "Method not allowed", nil)
+        return
+    }
+
     mutex.Lock()
     defer mutex.Unlock()
 
     users, err := loadUsers()
     if err != nil {
-        jsonResponse(w, http.StatusInternalServerError, false, "Gagal membaca users", nil)
+        jsonResponse(w, http.StatusInternalServerError, false, "Gagal membaca database user", nil)
         return
     }
 
@@ -480,23 +476,23 @@ func cleanupExpired(w http.ResponseWriter, r *http.Request) {
         return
     }
 
+    today := time.Now().Format("2006-01-02")
+
+    // Collect expired passwords
     expiredPasswords := make(map[string]bool)
     for _, u := range users {
-        expTime, err := time.Parse("2006-01-02 15:04:05", u.Expired)
-        // Hapus jika sudah expired, terlepas dari status locked/active (karena sudah waktunya dihapus)
-        if err == nil && time.Now().After(expTime) {
+        // PERBAIKAN 7: Gunakan <= agar expired hari ini langsung dihapus saat jam 00:01
+        if u.Expired <= today {
             expiredPasswords[u.Password] = true
         }
     }
 
     if len(expiredPasswords) == 0 {
-        jsonResponse(w, http.StatusOK, true, "Tidak ada akun expired", map[string]interface{}{
-            "deleted_count": 0,
-            "deleted_users": []string{},
-        })
+        jsonResponse(w, http.StatusOK, true, "Tidak ada akun expired", nil)
         return
     }
 
+    // Remove from users.json
     activeUsers := []UserStore{}
     for _, u := range users {
         if !expiredPasswords[u.Password] {
@@ -504,39 +500,92 @@ func cleanupExpired(w http.ResponseWriter, r *http.Request) {
         }
     }
 
+    // Remove from config.json
     activeConfig := []string{}
     for _, p := range config.Auth.Config {
         if !expiredPasswords[p] {
             activeConfig = append(activeConfig, p)
         }
     }
-
     config.Auth.Config = activeConfig
 
-    saveUsers(activeUsers)
-    saveConfig(config)
-    
-    // Restart service agar config berlaku
-    go restartService()
-
-    deletedList := make([]string, 0, len(expiredPasswords))
-    for pwd := range expiredPasswords {
-        deletedList = append(deletedList, pwd)
+    // Save both
+    if err := saveUsers(activeUsers); err != nil {
+        jsonResponse(w, http.StatusInternalServerError, false, "Gagal menyimpan users.json", nil)
+        return
     }
-    // Sort agar list di report admin rapi
-    sort.Strings(deletedList)
 
-    jsonResponse(w, http.StatusOK, true, fmt.Sprintf("Berhasil menghapus %d akun expired", len(expiredPasswords)), map[string]interface{}{
-        "deleted_count": len(expiredPasswords),
+    if err := saveConfig(config); err != nil {
+        jsonResponse(w, http.StatusInternalServerError, false, "Gagal menyimpan config.json", nil)
+        return
+    }
+
+    // Restart service
+    restartService()
+
+    deletedCount := len(expiredPasswords)
+    deletedList := []string{}
+    for p := range expiredPasswords {
+        deletedList = append(deletedList, p)
+    }
+
+    jsonResponse(w, http.StatusOK, true, fmt.Sprintf("Berhasil menghapus %d akun expired", deletedCount), map[string]interface{}{
+        "deleted_count": deletedCount,
         "deleted_users": deletedList,
     })
 }
 
-// Helper Functions
+func revokeAccess(password string) {
+    mutex.Lock()
+    defer mutex.Unlock()
+
+    config, err := loadConfig()
+    if err == nil {
+        newConfigAuth := []string{}
+        changed := false
+        for _, p := range config.Auth.Config {
+            if p == password {
+                changed = true
+            } else {
+                newConfigAuth = append(newConfigAuth, p)
+            }
+        }
+        if changed {
+            config.Auth.Config = newConfigAuth
+            saveConfig(config)
+            restartService()
+        }
+    }
+}
+
+func enableUser(password string) {
+    mutex.Lock()
+    defer mutex.Unlock()
+
+    config, err := loadConfig()
+    if err != nil {
+        return
+    }
+
+    exists := false
+    for _, p := range config.Auth.Config {
+        if p == password {
+            exists = true
+            break
+        }
+    }
+
+    if !exists {
+        config.Auth.Config = append(config.Auth.Config, password)
+        saveConfig(config)
+        restartService()
+    }
+}
+
 
 func loadConfig() (Config, error) {
     var config Config
-    file, err := os.ReadFile(ConfigFile)
+    file, err := ioutil.ReadFile(ConfigFile)
     if err != nil {
         return config, err
     }
@@ -549,12 +598,12 @@ func saveConfig(config Config) error {
     if err != nil {
         return err
     }
-    return os.WriteFile(ConfigFile, data, 0644)
+    return ioutil.WriteFile(ConfigFile, data, 0644)
 }
 
 func loadUsers() ([]UserStore, error) {
     var users []UserStore
-    file, err := os.ReadFile(UserDB)
+    file, err := ioutil.ReadFile(UserDB)
     if err != nil {
         if os.IsNotExist(err) {
             return users, nil
@@ -570,17 +619,10 @@ func saveUsers(users []UserStore) error {
     if err != nil {
         return err
     }
-    return os.WriteFile(UserDB, data, 0644)
+    return ioutil.WriteFile(UserDB, data, 0644)
 }
 
 func restartService() error {
-    // Restart service secara async tidak perlu return error ke caller
     cmd := exec.Command("systemctl", "restart", "zivpn.service")
-    err := cmd.Run()
-    if err != nil {
-        log.Printf("❌ Gagal restart service: %v", err)
-    } else {
-        log.Println("✅ Service berhasil direstart.")
-    }
-    return err
+    return cmd.Run()
 }
