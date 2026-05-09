@@ -447,20 +447,21 @@ func generateTrialPassword() string {
     return "TrialVip" + string(b)
 }
 
-// UPDATE: Create Trial Account dengan parameter durasi menit
+// UPDATE: Create Trial Account
+// Dikembalikan ke days=0 agar kompatibel dengan API
 func createTrialAccount(bot *tgbotapi.BotAPI, chatID int64, userID int64, config *BotConfig, durationMinutes int) {
-    loadingMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("⏳ Membuat Akun Trial (%d Menit)...", durationMinutes))
+    loadingMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("⏳ Membuat Akun Trial..."))
     sentMsg, _ := bot.Send(loadingMsg)
 
     stopAnim := make(chan bool)
     go animateLoading(bot, chatID, sentMsg.MessageID, stopAnim)
 
-    // Generate username format TrialVipXXXXX
+    // Generate username format TrialVip + 5 Angka Acak
     username := generateTrialPassword()
     
-    // Hitung durasi dalam hari (desimal)
-    // Rumus: Menit / (60 * 24)
-    days := float64(durationMinutes) / 1440.0
+    // PERBAIKAN: Kita kirim 0 agar server menggunakan durasi default Trial
+    // Mengirim desimal (seperti 0.02) seringkali ditolak oleh API ZiVPN biasa
+    days := 0
 
     res, err := apiCall("POST", "/user/create", map[string]interface{}{
         "password": username,
@@ -480,11 +481,11 @@ func createTrialAccount(bot *tgbotapi.BotAPI, chatID int64, userID int64, config
         data := res["data"].(map[string]interface{})
         sendAccountInfo(bot, chatID, data, config)
     } else {
+        // Jika masih gagal, coba cek pesan error di logs server
         replyError(bot, chatID, fmt.Sprintf("Gagal: %s", res["message"]))
         showMainMenu(bot, chatID, config)
     }
 }
-
 func startCreateUser(bot *tgbotapi.BotAPI, chatID int64, userID int64, config *BotConfig) {
     if config.Mode == "public" && userID != config.AdminID {
         usageData, err := loadPublicUsage()

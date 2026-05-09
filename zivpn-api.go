@@ -8,17 +8,19 @@ import (
     "net/http"
     "os"
     "os/exec"
+    "sort"
+    "strconv"
     "strings"
     "sync"
     "time"
 )
 
 const (
-    ConfigFile = "/etc/zivpn/config.json"
-    UserDB     = "/etc/zivpn/users.json"
-    DomainFile = "/etc/zivpn/domain"
-    ApiKeyFile = "/etc/zivpn/apikey"
-    // PortFile tidak digunakan di kode, tapi tetap didefinisikan jika dibutuhkan di masa depan
+    ConfigFile  = "/etc/zivpn/config.json"
+    UserDB      = "/etc/zivpn/users.json"
+    DomainFile  = "/etc/zivpn/domain"
+    ApiKeyFile  = "/etc/zivpn/apikey"
+    ApiPortFile = "/etc/zivpn/api_port" // Tambah konstanta untuk port
 )
 
 var AuthToken = "AutoFtBot-agskjgdvsbdreiWG1234512SDKrqw"
@@ -37,7 +39,6 @@ type Config struct {
 type UserRequest struct {
     Password string `json:"password"`
     Days     int    `json:"days"`
-    Expire   int64  `json:"expire"` // Disiapkan jika dibutuhkan logic lain
 }
 
 type UserStore struct {
@@ -55,7 +56,15 @@ type Response struct {
 var mutex = &sync.Mutex{}
 
 func main() {
-    port := flag.Int("port", 8080, "Port to run the API server on")
+    // Baca Port dari File API agar sinkron dengan Bot
+    port := 8080 // Default
+    if portBytes, err := os.ReadFile(ApiPortFile); err == nil {
+        if p, err := strconv.Atoi(strings.TrimSpace(string(portBytes))); err == nil {
+            port = p
+        }
+    }
+
+    flag.Int("port", port, "Port to run the API server on")
     flag.Parse()
 
     // Baca API Key dari file jika ada
@@ -72,14 +81,16 @@ func main() {
     http.HandleFunc("/api/cron/expire", authMiddleware(checkExpiration))
     http.HandleFunc("/api/cron/cleanup", authMiddleware(cleanupExpired))
 
-    log.Printf("Server started at :%d", *port)
-    log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *port), nil))
+    log.Printf("✅ API Server started at :%d", port)
+    log.Printf("🔑 Using Auth Token: %s", AuthToken)
+    log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", port), nil))
 }
 
 func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
         token := r.Header.Get("X-API-Key")
         if token != AuthToken {
+            log.Printf("⛔ Unauthorized access attempt from IP: %s", r.RemoteAddr)
             jsonResponse(w, http.StatusUnauthorized, false, "Unauthorized", nil)
             return
         }
@@ -141,6 +152,7 @@ func createUser(w http.ResponseWriter, r *http.Request) {
     // Hitung Expired
     var expDate string
     if req.Days == 0 {
+        // Jika 0, set default trial 30 Menit
         expDate = time.Now().Add(30 * time.Minute).Format("2006-01-02 15:04:05")
     } else {
         expDate = time.Now().Add(time.Duration(req.Days) * 24 * time.Hour).Format("2006-01-02 15:04:05")
@@ -165,10 +177,8 @@ func createUser(w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    if err := restartService(); err != nil {
-        jsonResponse(w, http.StatusInternalServerError, false, "Gagal restart service", nil)
-        return
-    }
+    // Restart service asynchronously agar tidak blocking response
+    go restartService()
 
     domain := "Tidak diatur"
     if domainBytes, err := os.ReadFile(DomainFile); err == nil {
@@ -245,7 +255,7 @@ func deleteUser(w http.ResponseWriter, r *http.Request) {
     }
 
     if foundInConfig {
-        restartService()
+        go restartService()
     }
 
     jsonResponse(w, http.StatusOK, true, "User berhasil dihapus", nil)
@@ -275,7 +285,7 @@ func renewUser(w http.ResponseWriter, r *http.Request) {
     found := false
     newUsers := []UserStore{}
     var newExpDate string
-    userStatusUpdated := false // Flag untuk cek apakah status berubah dari locked ke active
+    userStatusUpdated := false
 
     for _, u := range users {
         if u.Password == req.Password {
@@ -317,7 +327,7 @@ func renewUser(w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    // Handle logic config secara langsung (bukan goroutine) untuk menghindari race condition
+    // Handle config logic
     if userStatusUpdated {
         config, err := loadConfig()
         if err == nil {
@@ -328,9 +338,6 @@ func renewUser(w http.ResponseWriter, r *http.Request) {
                     break
                 }
             }
-            
-            // Jika user tadi locked kemungkinan besar dihapus dari config,
-            // kita tambahkan kembali agar bisa connect.
             if !userExistsInConfig {
                 config.Auth.Config = append(config.Auth.Config, req.Password)
                 saveConfig(config)
@@ -338,10 +345,7 @@ func renewUser(w http.ResponseWriter, r *http.Request) {
         }
     }
 
-    if err := restartService(); err != nil {
-        // Log error tapi tetap kirim sukses karena user sudah diperpanjang di DB
-        log.Printf("Warning: Gagal restart service setelah renew: %v", err)
-    }
+    go restartService()
 
     jsonResponse(w, http.StatusOK, true, "User berhasil diperpanjang", map[string]string{
         "password": req.Password,
@@ -408,7 +412,6 @@ func getSystemInfo(w http.ResponseWriter, r *http.Request) {
 }
 
 func checkExpiration(w http.ResponseWriter, r *http.Request) {
-    // Tambahkan Lock untuk mencegah race condition saat create/delete
     mutex.Lock()
     defer mutex.Unlock()
 
@@ -437,7 +440,7 @@ func checkExpiration(w http.ResponseWriter, r *http.Request) {
         if u.Status != "locked" {
             expTime, err := time.Parse("2006-01-02 15:04:05", u.Expired)
             if err == nil && time.Now().After(expTime) && activeUsers[u.Password] {
-                log.Printf("User %s expired. Revoking access.\n", u.Password)
+                log.Printf("⚠️ User %s expired. Revoking access.\n", u.Password)
                 
                 // Hapus dari config
                 newConfigAuth := []string{}
@@ -455,7 +458,7 @@ func checkExpiration(w http.ResponseWriter, r *http.Request) {
 
     if updatedConfig {
         saveConfig(config)
-        restartService()
+        go restartService()
     }
 
     jsonResponse(w, http.StatusOK, true, fmt.Sprintf("Expiration check complete. Revoked: %d", revokedCount), nil)
@@ -480,6 +483,7 @@ func cleanupExpired(w http.ResponseWriter, r *http.Request) {
     expiredPasswords := make(map[string]bool)
     for _, u := range users {
         expTime, err := time.Parse("2006-01-02 15:04:05", u.Expired)
+        // Hapus jika sudah expired, terlepas dari status locked/active (karena sudah waktunya dihapus)
         if err == nil && time.Now().After(expTime) {
             expiredPasswords[u.Password] = true
         }
@@ -511,12 +515,16 @@ func cleanupExpired(w http.ResponseWriter, r *http.Request) {
 
     saveUsers(activeUsers)
     saveConfig(config)
-    restartService()
+    
+    // Restart service agar config berlaku
+    go restartService()
 
     deletedList := make([]string, 0, len(expiredPasswords))
     for pwd := range expiredPasswords {
         deletedList = append(deletedList, pwd)
     }
+    // Sort agar list di report admin rapi
+    sort.Strings(deletedList)
 
     jsonResponse(w, http.StatusOK, true, fmt.Sprintf("Berhasil menghapus %d akun expired", len(expiredPasswords)), map[string]interface{}{
         "deleted_count": len(expiredPasswords),
@@ -524,7 +532,7 @@ func cleanupExpired(w http.ResponseWriter, r *http.Request) {
     })
 }
 
-// Helper Functions (Tanpa internal locking, locking ditangani di caller)
+// Helper Functions
 
 func loadConfig() (Config, error) {
     var config Config
@@ -566,6 +574,13 @@ func saveUsers(users []UserStore) error {
 }
 
 func restartService() error {
+    // Restart service secara async tidak perlu return error ke caller
     cmd := exec.Command("systemctl", "restart", "zivpn.service")
-    return cmd.Run()
+    err := cmd.Run()
+    if err != nil {
+        log.Printf("❌ Gagal restart service: %v", err)
+    } else {
+        log.Println("✅ Service berhasil direstart.")
+    }
+    return err
 }
