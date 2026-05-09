@@ -1436,19 +1436,23 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
     donationAmount := formatRupiah(donationData.Collected)
 
     msgText := fmt.Sprintf(
-    "┏━━━━━━━━━━━━━━━━━━━━━━┓\n"+
-    "┃ 🤖 RISWAN ZIVPN UDP BOT     ┃\n"+
-    "┗━━━━━━━━━━━━━━━━━━━━━━┛\n"+
-    "┏━━ 📍 INFORMASI SERVER ━━┓\n"+
-    "┣ 🌐 Domain   : `%s`\n"+
-    "┣ 🏙️ City     : %s\n"+
-    "┣ 📡 ISP      : %s\n"+
-    "┣ 👥 Total    : %d Akun\n"+
-    "┣ 💰 Donasi   : Rp %s / 90K\n"+
-    "┣ ⏳ VPS Exp  : %s\n"+
-    "┗━━━━━━━━━━━━━━━━━━━━━━┛\n"+
-    "🤖 Version V4.5",
-    domain, ipInfo.City, ipInfo.Isp, totalAcc, donationAmount, vpsExp,
+        "┏━━━━━━━━━━━━━━━━━━━━━━┓\n"+
+        "┃ 🤖 RISWAN ZIVPN UDP BOT\n"+
+        "┗━━━━━━━━━━━━━━━━━━━━━━┛\n"+
+        "┏━━ 📍 INFORMASI SERVER ━━┓\n"+
+        "┣ 🌐 Domain: `%s`\n"+
+        "┣ 🏙️ City: %s\n"+
+        "┣ 📡 ISP: %s\n"+
+        "┣ 👥 Total: %d Akun\n"+
+        "┣ 💰 Donasi: Rp %s / 90K\n"+
+        "┣ ⏳ Exp Vps: %s\n"+
+        "┗━━━━━━━━━━━━━━━━━━━━━━┛\n"+
+        "┏━━━━━━━━━━━━━━━━━━━━━━┓\n"+
+        "┣ 🤖 Bot Version  : V4.5\n"+
+        "┗━━━━━━━━━━━━━━━━━━━━━━┛",
+        domain, ipInfo.City,ipInfo.Isp, totalAcc,
+    donationAmount,
+    vpsExp,
 )
 
     deleteLastMessage(bot, chatID)
