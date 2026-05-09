@@ -37,6 +37,7 @@ const (
     PublicCooldownDays = 6
     VpsExpiredFile     = "/etc/zivpn/vps_expired"
     DonationDataFile   = "/etc/zivpn/donation_data.json"
+    LockedUsersFile    = "/etc/zivpn/locked_users.json" // File untuk menyimpan data sementara
 )
 
 // =====================================================
@@ -78,6 +79,13 @@ type PublicUsageData struct {
 // Struct untuk menyimpan data donasi
 type DonationData struct {
     Collected int `json:"collected"`
+}
+
+// Struct untuk menyimpan data user yang di-lock (Hapus Sementara)
+type LockedUser struct {
+    Password string `json:"password"`
+    Expired  string `json:"expired"`
+    LockedAt string `json:"locked_at"`
 }
 
 // ==========================================
@@ -240,7 +248,7 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
     case query.Data == "menu_lock_user":
         showUserSelection(bot, chatID, 1, "lock")
     case query.Data == "menu_unlock_user":
-        showUserSelection(bot, chatID, 1, "unlock")
+        showLockedUsersList(bot, chatID) // Menampilkan list user yang terkunci
     // END LOCK MENU
 
     case query.Data == "cancel":
@@ -256,10 +264,10 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
         deleteUser(bot, chatID, username, config)
     case strings.HasPrefix(query.Data, "select_lock:"):
         username := strings.TrimPrefix(query.Data, "select_lock:")
-        performLockAction(bot, chatID, username, "lock", config)
+        performLockAction(bot, chatID, username, config)
     case strings.HasPrefix(query.Data, "select_unlock:"):
         username := strings.TrimPrefix(query.Data, "select_unlock:")
-        performLockAction(bot, chatID, username, "unlock", config)
+        performUnlockAction(bot, chatID, username, config)
     case query.Data == "toggle_mode":
         toggleMode(bot, chatID, userID, config)
 
@@ -471,24 +479,38 @@ func animateLoading(bot *tgbotapi.BotAPI, chatID int64, msgID int, stop <-chan b
 // Feature Implementation
 // ==========================================
 
-// performLockAction menangani logika lock dan unlock user
-func performLockAction(bot *tgbotapi.BotAPI, chatID int64, username string, action string, config *BotConfig) {
-    var endpoint string
-    var actionText string
-
-    if action == "lock" {
-        endpoint = "/user/lock" // Pastikan API support ini, atau ganti logikanya
-        actionText = "Mengunci"
-    } else {
-        endpoint = "/user/unlock" // Pastikan API support ini, atau ganti logikanya
-        actionText = "Membuka kunci"
+// performLockAction: Hapus Sementara (Simpan data -> Delete API)
+func performLockAction(bot *tgbotapi.BotAPI, chatID int64, username string, config *BotConfig) {
+    // 1. Ambil data user saat ini untuk simpan tanggal expired
+    users, err := getUsers()
+    if err != nil {
+        replyError(bot, chatID, "Gagal mengambil data user.")
+        return
     }
 
-    // Fallback Logic jika API tidak punya endpoint lock/unlock spesifik:
-    // Anda bisa mengganti endpoint di atas menjadi "/user/update" dan payload mengandung status.
-    // Disini saya asumsikan endpoint tersebut ada.
+    var targetUser *UserData
+    for i, u := range users {
+        if u.Password == username {
+            targetUser = &users[i]
+            break
+        }
+    }
 
-    res, err := apiCall("POST", endpoint, map[string]interface{}{
+    if targetUser == nil {
+        replyError(bot, chatID, "User tidak ditemukan.")
+        return
+    }
+
+    // 2. Simpan ke file locked_users.json
+    lockedData := LockedUser{
+        Password: username,
+        Expired:  targetUser.Expired,
+        LockedAt: time.Now().Format("2006-01-02 15:04:05"),
+    }
+    saveLockedUser(lockedData)
+
+    // 3. Hapus user dari server (API)
+    res, err := apiCall("POST", "/user/delete", map[string]interface{}{
         "password": username,
     })
 
@@ -498,7 +520,7 @@ func performLockAction(bot *tgbotapi.BotAPI, chatID int64, username string, acti
     }
 
     if res["success"] == true {
-        msg := fmt.Sprintf("✅ Berhasil %s akun `%s`.", actionText, username)
+        msg := fmt.Sprintf("✅ Akun `%s` berhasil DIKUNCI (Hapus Sementara).\n💾 Data disimpan untuk pemulihan.", username)
         reply := tgbotapi.NewMessage(chatID, msg)
         reply.ParseMode = "Markdown"
         deleteLastMessage(bot, chatID)
@@ -506,7 +528,48 @@ func performLockAction(bot *tgbotapi.BotAPI, chatID int64, username string, acti
         showMainMenu(bot, chatID, config)
     } else {
         replyError(bot, chatID, fmt.Sprintf("Gagal: %s", res["message"]))
+    }
+}
+
+// performUnlockAction: Buat Ulang (Ambil data -> Create API dengan Expired Lama)
+func performUnlockAction(bot *tgbotapi.BotAPI, chatID int64, username string, config *BotConfig) {
+    // 1. Ambil data dari file locked_users.json
+    lockedUser, err := getLockedUser(username)
+    if err != nil {
+        replyError(bot, chatID, "Data user tidak ditemukan di database kunci.")
+        return
+    }
+
+    // 2. Parse tanggal expired lama ke Unix Timestamp
+    expTime, err := parseUserExpiry(lockedUser.Expired)
+    if err != nil {
+        replyError(bot, chatID, "Format tanggal expired tersimpan tidak valid.")
+        return
+    }
+
+    // 3. Buat ulang akun (Create API)
+    res, err := apiCall("POST", "/user/create", map[string]interface{}{
+        "password": username,
+        "expire":   expTime.Unix(),
+    })
+
+    if err != nil {
+        replyError(bot, chatID, "Error API: "+err.Error())
+        return
+    }
+
+    if res["success"] == true {
+        // 4. Hapus dari file locked_users.json karena sudah aktif lagi
+        deleteLockedUser(username)
+
+        msg := fmt.Sprintf("✅ Akun `%s` berhasil DIBUKAK KEMBALI.\n⏳ Masa aktif kembali hingga: %s", username, lockedUser.Expired)
+        reply := tgbotapi.NewMessage(chatID, msg)
+        reply.ParseMode = "Markdown"
+        deleteLastMessage(bot, chatID)
+        bot.Send(reply)
         showMainMenu(bot, chatID, config)
+    } else {
+        replyError(bot, chatID, fmt.Sprintf("Gagal: %s", res["message"]))
     }
 }
 
@@ -514,14 +577,46 @@ func showLockMenu(bot *tgbotapi.BotAPI, chatID int64) {
     msg := tgbotapi.NewMessage(chatID, "🔒 「 MANAJEMEN LOCK/UNLOCK 」")
     msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
         tgbotapi.NewInlineKeyboardRow(
-            tgbotapi.NewInlineKeyboardButtonData("🔒 Lock User", "menu_lock_user"),
-            tgbotapi.NewInlineKeyboardButtonData("🔓 Unlock User", "menu_unlock_user"),
+            tgbotapi.NewInlineKeyboardButtonData("🔒 Lock", "menu_lock_user"),
+            tgbotapi.NewInlineKeyboardButtonData("🔓 Unlock", "menu_unlock_user"),
         ),
         tgbotapi.NewInlineKeyboardRow(
             tgbotapi.NewInlineKeyboardButtonData("❌ Batal", "cancel"),
         ),
     )
     sendAndTrack(bot, msg)
+}
+
+func showLockedUsersList(bot *tgbotapi.BotAPI, chatID int64) {
+    lockedMap, err := loadLockedUsers()
+    if err != nil {
+        replyError(bot, chatID, "Gagal memuat data terkunci.")
+        return
+    }
+
+    if len(lockedMap) == 0 {
+        sendMessage(bot, chatID, "✅ Tidak ada akun yang dikunci saat ini.")
+        showMainMenu(bot, chatID, &BotConfig{}) // config dummy, or pass actual if needed
+        return
+    }
+
+    msg := "🔓 「 LIST AKUN TERKUNCI 」\n\n"
+    var rows [][]tgbotapi.InlineKeyboardButton
+
+    for _, u := range lockedMap {
+        msg += fmt.Sprintf("🔴 `%s` ⌛ %s\n", u.Password, u.Expired)
+        data := fmt.Sprintf("select_unlock:%s", u.Password)
+        rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+            tgbotapi.NewInlineKeyboardButtonData("🔓 Unlock", data),
+        ))
+    }
+
+    rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("❌ Batal", "cancel")))
+
+    reply := tgbotapi.NewMessage(chatID, msg)
+    reply.ParseMode = "Markdown"
+    reply.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(rows...)
+    sendAndTrack(bot, reply)
 }
 
 // handleQuickCreate membuat akun secara instan dengan format password: viip{days}day{6angkaacak}
@@ -1060,6 +1155,7 @@ func performBackup(bot *tgbotapi.BotAPI, chatID int64) {
         PublicUsageFile,
         VpsExpiredFile,
         DonationDataFile,
+        LockedUsersFile, // Backup juga data locked
     }
 
     buf := new(bytes.Buffer)
@@ -1232,6 +1328,7 @@ func processRestoreFile(bot *tgbotapi.BotAPI, msg *tgbotapi.Message, config *Bot
             "public_usage.json":  true,
             "vps_expired":        true,
             "donation_data.json": true,
+            "locked_users.json":  true, // Restore juga data locked
         }
 
         if !validFiles[f.Name] {
@@ -1398,15 +1495,15 @@ func getMainMenuKeyboard(config *BotConfig, chatID int64) tgbotapi.InlineKeyboar
             ),
             // Baris Fitur Utama - Emojis
             tgbotapi.NewInlineKeyboardRow(
-                tgbotapi.NewInlineKeyboardButtonData("👤 Create", "menu_create"),
-                tgbotapi.NewInlineKeyboardButtonData("🗑️ Delete", "menu_delete"),
+                tgbotapi.NewInlineKeyboardButtonData("👤 Create pas", "menu_create"),
+                tgbotapi.NewInlineKeyboardButtonData("🗑️ Delete pas", "menu_delete"),
             ),
             tgbotapi.NewInlineKeyboardRow(
-                tgbotapi.NewInlineKeyboardButtonData("🔄 Renew", "menu_renew"),
-                tgbotapi.NewInlineKeyboardButtonData("📋 List", "menu_list"),
+                tgbotapi.NewInlineKeyboardButtonData("🔄 Renew pas", "menu_renew"),
+                tgbotapi.NewInlineKeyboardButtonData("📋 List pas", "menu_list"),
             ),
             tgbotapi.NewInlineKeyboardRow(
-                tgbotapi.NewInlineKeyboardButtonData("🔒 Lock", "menu_lock_mgmt"),
+                tgbotapi.NewInlineKeyboardButtonData("🔒 Lock pas", "menu_lock_mgmt"),
                 tgbotapi.NewInlineKeyboardButtonData("📊 Info", "menu_info"),
             ),
             tgbotapi.NewInlineKeyboardRow(
@@ -1520,9 +1617,6 @@ func showUserSelection(bot *tgbotapi.BotAPI, chatID int64, page int, action stri
     case "lock":
         actionName = "Lock"
         btnEmoji = "🔒"
-    case "unlock":
-        actionName = "Unlock"
-        btnEmoji = "🔓"
     default:
         actionName = action
         btnEmoji = "⚙️"
@@ -1699,6 +1793,58 @@ func savePublicUsage(userID int64) error {
         return err
     }
     return ioutil.WriteFile(PublicUsageFile, jsonData, 0644)
+}
+
+// Helpers untuk Locked Users (Hapus Sementara / Buat Ulang)
+func loadLockedUsers() (map[string]LockedUser, error) {
+    data := make(map[string]LockedUser)
+    file, err := ioutil.ReadFile(LockedUsersFile)
+    if err != nil {
+        if os.IsNotExist(err) {
+            return data, nil
+        }
+        return nil, err
+    }
+    err = json.Unmarshal(file, &data)
+    return data, err
+}
+
+func saveLockedUser(user LockedUser) error {
+    data, err := loadLockedUsers()
+    if err != nil {
+        data = make(map[string]LockedUser)
+    }
+
+    data[user.Password] = user
+    jsonData, err := json.MarshalIndent(data, "", "  ")
+    if err != nil {
+        return err
+    }
+    return ioutil.WriteFile(LockedUsersFile, jsonData, 0644)
+}
+
+func deleteLockedUser(username string) error {
+    data, err := loadLockedUsers()
+    if err != nil {
+        return err
+    }
+    delete(data, username)
+    jsonData, err := json.MarshalIndent(data, "", "  ")
+    if err != nil {
+        return err
+    }
+    return ioutil.WriteFile(LockedUsersFile, jsonData, 0644)
+}
+
+func getLockedUser(username string) (LockedUser, error) {
+    data, err := loadLockedUsers()
+    if err != nil {
+        return LockedUser{}, err
+    }
+    if u, exists := data[username]; exists {
+        return u, nil
+    }
+    return LockedUser{}, fmt.Errorf("user not found")
 }
 
 // ==========================================
