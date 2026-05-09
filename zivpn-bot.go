@@ -8,7 +8,7 @@ import (
     "io"
     "io/ioutil"
     "log"
-    "math/rand"
+    "math/rand" // Import untuk generate random string
     "net/http"
     "os"
     "os/exec"
@@ -94,7 +94,8 @@ var animMutex sync.Mutex
 // ==========================================
 
 func main() {
-    rand.Seed(time.Now().UnixNano()) // Initialize random seed
+    // Seed random number generator agar setiap run hasilnya beda
+    rand.Seed(time.Now().UnixNano())
 
     if keyBytes, err := ioutil.ReadFile(ApiKeyFile); err == nil {
         ApiKey = strings.TrimSpace(string(keyBytes))
@@ -243,14 +244,6 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
     case query.Data == "toggle_mode":
         toggleMode(bot, chatID, userID, config)
 
-    // HANDLE QUICK CREATE VIIP
-    case strings.HasPrefix(query.Data, "viip_"):
-        daysStr := strings.TrimPrefix(query.Data, "viip_")
-        days, err := strconv.Atoi(daysStr)
-        if err == nil {
-            createQuickAccount(bot, chatID, userID, config, days)
-        }
-
     // HANDLE CALLBACK BARU UNTUK DELETE MENU
     case query.Data == "delete_single":
         showUserSelection(bot, chatID, 1, "delete")
@@ -261,6 +254,18 @@ func handleCallback(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery, config 
     case strings.HasPrefix(query.Data, "confirm_mass_delete:"):
         action := strings.TrimPrefix(query.Data, "confirm_mass_delete:")
         performMassDelete(bot, chatID, action, config)
+
+    // HANDLE QUICK CREATE (VIP)
+    case strings.HasPrefix(query.Data, "quick_create:"):
+        if userID != config.AdminID {
+            bot.Request(tgbotapi.NewCallback(query.ID, "Akses Ditolak"))
+            return
+        }
+        parts := strings.Split(query.Data, ":")
+        days, err := strconv.Atoi(parts[1])
+        if err == nil {
+            handleQuickCreate(bot, chatID, userID, days, config)
+        }
     }
 
     bot.Request(tgbotapi.NewCallback(query.ID, ""))
@@ -447,66 +452,50 @@ func animateLoading(bot *tgbotapi.BotAPI, chatID int64, msgID int, stop <-chan b
 // Feature Implementation
 // ==========================================
 
-func createQuickAccount(bot *tgbotapi.BotAPI, chatID int64, userID int64, config *BotConfig, days int) {
-    // 1. Check Cooldown if Public Mode
-    if config.Mode == "public" && userID != config.AdminID {
-        usageData, err := loadPublicUsage()
-        if err == nil {
-            if data, exists := usageData[userID]; exists {
-                lastTime := time.Unix(data.LastCreated, 0)
-                elapsed := time.Since(lastTime)
-                cooldownDuration := time.Duration(PublicCooldownDays) * 24 * time.Hour
-
-                if elapsed < cooldownDuration {
-                    remaining := cooldownDuration - elapsed
-                    remainingHours := int(remaining.Hours())
-                    daysRem := remainingHours / 24
-                    hours := remainingHours % 24
-                    replyError(bot, chatID, fmt.Sprintf("⛔ Anda sudah membuat akun sebelumnya.\n🙏 Harap tunggu sekitar %d hari %d jam lagi.", daysRem, hours))
-                    return
-                }
-            }
-        }
+// handleQuickCreate membuat akun secara instan dengan format password khusus
+func handleQuickCreate(bot *tgbotapi.BotAPI, chatID int64, userID int64, days int, config *BotConfig) {
+    if userID != config.AdminID {
+        replyError(bot, chatID, "⛔ Akses Ditolak.")
+        return
     }
 
-    // 2. Generate Username: viip{days}day{6angkaacak}
-    randomDigits := rand.Intn(1000000) // 0-999999
-    username := fmt.Sprintf("viip%dday%06d", days, randomDigits)
+    // Generate random string (6 chars alphanumeric)
+    const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    b := make([]byte, 6)
+    for i := range b {
+        b[i] = charset[rand.Intn(len(charset))]
+    }
+    randomSuffix := string(b)
 
-    // 3. Loading Animation
-    loadingMsg := tgbotapi.NewMessage(chatID, "⏳ Membuat Akun...")
-    sentMsg, _ := bot.Send(loadingMsg)
-    stopAnim := make(chan bool)
-    go animateLoading(bot, chatID, sentMsg.MessageID, stopAnim)
+    // Format Password: viip{days}day{random6chars}
+    password := fmt.Sprintf("viip%dday%s", days, randomSuffix)
 
-    // 4. Calculate Expired Time
+    // Calculate expiration
     now := time.Now()
     targetExpireTime := time.Date(now.Year(), now.Month(), now.Day()+days, 0, 0, 1, 0, now.Location())
 
-    // 5. Call API
+    loadingMsg, _ := bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("⏳ Membuat Akun VIP %d Hari...", days)))
+    sentMsgID := loadingMsg.MessageID
+
+    // Call API
     res, err := apiCall("POST", "/user/create", map[string]interface{}{
-        "password": username,
+        "password": password,
         "expire":   targetExpireTime.Unix(),
     })
 
-    stopAnim <- true
-    bot.Request(tgbotapi.NewDeleteMessage(chatID, sentMsg.MessageID))
+    // Delete loading message
+    bot.Request(tgbotapi.NewDeleteMessage(chatID, sentMsgID))
 
     if err != nil {
         replyError(bot, chatID, "Error API: "+err.Error())
-        showMainMenu(bot, chatID, config)
         return
     }
 
     if res["success"] == true {
-        if config.Mode == "public" && userID != config.AdminID {
-            savePublicUsage(userID)
-        }
         data := res["data"].(map[string]interface{})
         sendAccountInfo(bot, chatID, data, config)
     } else {
         replyError(bot, chatID, fmt.Sprintf("Gagal: %s", res["message"]))
-        showMainMenu(bot, chatID, config)
     }
 }
 
@@ -1273,7 +1262,7 @@ func showMainMenu(bot *tgbotapi.BotAPI, chatID int64, config *BotConfig) {
     donationAmount := formatRupiah(donationData.Collected)
 
     msgText := fmt.Sprintf(
-        "╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
+            "╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
             "│ 🤖 RISWAN JABAR STORE ZIVPN UDP BOT \n"+
             "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
             "📍 INFORMASI SERVER\n"+
@@ -1324,49 +1313,55 @@ func getMainMenuKeyboard(config *BotConfig, chatID int64) tgbotapi.InlineKeyboar
         }
 
         rows := [][]tgbotapi.InlineKeyboardButton{
-            tgbotapi.NewInlineKeyboardRow(
-                tgbotapi.NewInlineKeyboardButtonData("👤 Create Password", "menu_create"),
-                tgbotapi.NewInlineKeyboardButtonData("🗑️ Delete Password", "menu_delete"),
-            ),
-            tgbotapi.NewInlineKeyboardRow(
-                tgbotapi.NewInlineKeyboardButtonData("🔄 Renew Account", "menu_renew"),
-                tgbotapi.NewInlineKeyboardButtonData("📋 List Passwords", "menu_list"),
-            ),
-            tgbotapi.NewInlineKeyboardRow(
-                tgbotapi.NewInlineKeyboardButtonData("📊 System Info", "menu_info"),
-                tgbotapi.NewInlineKeyboardButtonData("💰 Set Donasi", "menu_set_donasi"),
-            ),
-            tgbotapi.NewInlineKeyboardRow(
-                tgbotapi.NewInlineKeyboardButtonData("⏳ Set VPS Exp", "menu_set_vps_exp"),
-                tgbotapi.NewInlineKeyboardButtonData(modeLabel, "toggle_mode"),
-            ),
-            tgbotapi.NewInlineKeyboardRow(
-                tgbotapi.NewInlineKeyboardButtonData("💾 Backup & Restore", "menu_backup_restore"),
-            ),
-        }
+    // 🔥 Quick Create VIP (Admin Only)
+    tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonData("⚡ 1 Hari", "quick_create:1"),
+        tgbotapi.NewInlineKeyboardButtonData("⚡ 15 Hari", "quick_create:15"),
+        tgbotapi.NewInlineKeyboardButtonData("⚡ 30 Hari", "quick_create:30"),
+    ),
+    tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonData("⚡ 60 Hari", "quick_create:60"),
+        tgbotapi.NewInlineKeyboardButtonData("⚡ 90 Hari", "quick_create:90"),
+    ),
 
-        return tgbotapi.NewInlineKeyboardMarkup(rows...)
+    // 👤 Menu Akun
+    tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonData("👤 Create Pass", "menu_create"),
+        tgbotapi.NewInlineKeyboardButtonData("🗑️ Delete Pass", "menu_delete"),
+    ),
+
+    // 🔄 Menu Management
+    tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonData("🔄 Renew Acc", "menu_renew"),
+        tgbotapi.NewInlineKeyboardButtonData("📋 List Pass", "menu_list"),
+    ),
+
+    // 📊 System & Donasi
+    tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonData("📊 Sys Info", "menu_info"),
+        tgbotapi.NewInlineKeyboardButtonData("💰 Set Donasi", "menu_set_donasi"),
+    ),
+
+    // ⏳ VPS & Mode
+    tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonData("⏳ Set VPS Exp", "menu_set_vps_exp"),
+        tgbotapi.NewInlineKeyboardButtonData("🛠️ "+modeLabel, "toggle_mode"),
+    ),
+
+    // 💾 Backup
+    tgbotapi.NewInlineKeyboardRow(
+        tgbotapi.NewInlineKeyboardButtonData("💾 Backup & Restore", "menu_backup_restore"),
+    ),
+}
+
+return tgbotapi.NewInlineKeyboardMarkup(rows...)
     }
 
-    // USER MENU (Public)
     rows := [][]tgbotapi.InlineKeyboardButton{
         tgbotapi.NewInlineKeyboardRow(
             tgbotapi.NewInlineKeyboardButtonData("👤 Create Password", "menu_create"),
         ),
     }
-
-    // Added Quick Create Buttons (VIIP)
-    rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-        tgbotapi.NewInlineKeyboardButtonData("1 Hari", "viip_1"),
-        tgbotapi.NewInlineKeyboardButtonData("15 Hari", "viip_15"),
-    ))
-    rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-        tgbotapi.NewInlineKeyboardButtonData("30 Hari", "viip_30"),
-        tgbotapi.NewInlineKeyboardButtonData("60 Hari", "viip_60"),
-    ))
-    rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-        tgbotapi.NewInlineKeyboardButtonData("90 Hari", "viip_90"),
-    ))
 
     rows = append(rows, tgbotapi.NewInlineKeyboardRow(
         tgbotapi.NewInlineKeyboardButtonURL("📺 Tutorial di youtube", "https://youtu.be/rxBWuHoPt1I?si=HzlfVnoXMfyq_8lr"),
